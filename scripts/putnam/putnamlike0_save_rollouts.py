@@ -47,7 +47,7 @@ import os
 import uuid
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, NamedTuple
 
 import click
 import pandas as pd
@@ -70,6 +70,12 @@ from chainscope.typing import (
 )
 from chainscope.cot_generation import get_local_responses_vllm, get_local_responses_tl
 from chainscope.utils import MODELS_MAP
+
+
+class QuestionResponseId(NamedTuple):
+    """Identifier for a specific question-response pair."""
+    qid: str
+    uuid: str
 
 
 class DatasetType(StrEnum):
@@ -125,29 +131,44 @@ def convert_putnam_to_local_format(
     dataset: MathQsDataset,
     preamble: str = "",
     prefix: Optional[int] = None,
-) -> list[tuple[str, str]]:
+    epochs: int = 1,
+) -> list[tuple[QuestionResponseId, str]]:
     """Convert Putnam dataset to format expected by local generation functions.
     
     Args:
         dataset: Putnam dataset
         preamble: Preamble text to add before each problem
         prefix: Only process first N problems if specified
+        epochs: Number of epochs to generate
         
     Returns:
-        List of (question_id, prompt) tuples
+        List of (QuestionResponseId, prompt) tuples
     """
     questions = dataset.questions[:prefix] if prefix else dataset.questions
     prompts = []
     
-    for question in questions:
-        prompt = f"{preamble}{question.problem}"
-        prompts.append((question.name, prompt))
+    for epoch in range(epochs):
+        for question in questions:
+            # Create question name with epoch if > 1
+            if epochs > 1:
+                question_name = f"{question.name}_attempt_{epoch + 1}"
+            else:
+                question_name = question.name
+            
+            # Create a QuestionResponseId for this question-response pair
+            q_resp_id = QuestionResponseId(
+                qid=question_name,
+                uuid=str(uuid.uuid4())
+            )
+            
+            prompt = f"{preamble}{question.problem}"
+            prompts.append((q_resp_id, prompt))
     
     return prompts
 
 
 def convert_local_results_to_putnam(
-    results: list[tuple[str, str, str | None]],
+    results: list[tuple[QuestionResponseId, str, str | None]],
     dataset: MathQsDataset,
     model_id: str,
     epochs: int = 1,
@@ -155,7 +176,7 @@ def convert_local_results_to_putnam(
     """Convert local generation results back to Putnam format.
     
     Args:
-        results: Results from local generation (question_id, response, fsp)
+        results: Results from local generation (QuestionResponseId, response, fsp)
         dataset: Original Putnam dataset
         model_id: Model ID used for generation
         epochs: Number of epochs processed
@@ -166,7 +187,8 @@ def convert_local_results_to_putnam(
     responses_by_qid = {}
     
     # Group results by question name
-    for question_name, response, fsp in results:
+    for q_resp_id, response, fsp in results:
+        question_name = q_resp_id.qid
         if not response:
             continue
             
@@ -407,18 +429,8 @@ async def generate_rollouts_local(
         max_new_tokens=max_new_tokens,
     )
     
-    # Convert Putnam data to local format
-    prompts = convert_putnam_to_local_format(dataset, preamble, prefix)
-    
-    # Handle multiple epochs
-    all_prompts = []
-    for epoch in range(epochs):
-        for question_name, prompt in prompts:
-            if epochs > 1:
-                epoch_question_name = f"{question_name}_attempt_{epoch + 1}"
-            else:
-                epoch_question_name = question_name
-            all_prompts.append((epoch_question_name, prompt))
+    # Convert Putnam data to local format (already handles epochs)
+    all_prompts = convert_putnam_to_local_format(dataset, preamble, prefix, epochs)
     
     if not all_prompts:
         logging.info("No prompts to process")
@@ -431,6 +443,9 @@ async def generate_rollouts_local(
         )
     
     # Generate responses using local model
+    # Create qid to dataset mapping (qid is the question name from QuestionResponseId)
+    qid_to_dataset = {q_resp_id.qid: dataset.params.id for q_resp_id, _ in all_prompts}
+    
     if api == "vllm":
         results = get_local_responses_vllm(
             prompts=all_prompts,
@@ -441,7 +456,7 @@ async def generate_rollouts_local(
             model_id_for_fsp=model_id_for_fsp,
             fsp_size=fsp_size,
             fsp_seed=fsp_seed,
-            qid_to_dataset={prompt[0]: dataset.params.id for prompt in all_prompts},
+            qid_to_dataset=qid_to_dataset,
         )
     else:  # ttl
         results = get_local_responses_tl(
@@ -454,7 +469,7 @@ async def generate_rollouts_local(
             fsp_size=fsp_size,
             fsp_seed=fsp_seed,
             local_gen_seed=local_gen_seed,
-            qid_to_dataset={prompt[0]: dataset.params.id for prompt in all_prompts},
+            qid_to_dataset=qid_to_dataset,
         )
     
     if not results:
