@@ -51,6 +51,12 @@ from typing import Any, Optional
 
 import click
 import pandas as pd
+import torch
+from tqdm import tqdm
+from transformer_lens import HookedTransformer
+from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
+from vllm import LLM
+from vllm import SamplingParams as VLLMSamplingParams
 import yaml
 
 from chainscope.api_utils.deepseek_utils import (
@@ -69,8 +75,7 @@ from chainscope.typing import (
     QuestionResponseId,
     SamplingParams,
 )
-from chainscope.cot_generation import get_local_responses_vllm, get_local_responses_tl
-from chainscope.utils import MODELS_MAP
+from chainscope.utils import MODELS_MAP, is_instruct_model, make_chat_prompt
 
 
 class DatasetType(StrEnum):
@@ -120,6 +125,130 @@ def load_putnam_results_as_df(yaml_path: Path) -> pd.DataFrame:
     with open(yaml_path) as f:
         data = yaml.safe_load(f)
     return pd.DataFrame(data)
+
+
+def get_putnam_responses_vllm(
+    prompts: list[tuple[QuestionResponseId, str]],
+    model_id: str,
+    sampling_params: SamplingParams,
+) -> list[tuple[QuestionResponseId, str, str | None]]:
+    """Generate responses using VLLM for Putnam problems.
+    
+    This is a simplified version that doesn't use FSP since Putnam problems
+    don't use the same dataset structure as IPHR.
+    """
+    # Initialize vLLM engine
+    llm = LLM(
+        model=model_id,
+        dtype="bfloat16",
+        tensor_parallel_size=torch.cuda.device_count(),
+    )
+    
+    # Convert our sampling params to vLLM format
+    vllm_params = VLLMSamplingParams(
+        temperature=sampling_params.temperature,
+        top_p=sampling_params.top_p,
+        max_tokens=sampling_params.max_new_tokens,
+    )
+    
+    # Prepare prompts
+    prompt_texts = []
+    q_resp_ids = []
+    
+    for q_resp_id, prompt in tqdm(prompts, desc="Preparing prompts"):
+        if is_instruct_model(model_id):
+            input_str = make_chat_prompt(
+                instruction=prompt,
+                tokenizer=llm.get_tokenizer(),  # type: ignore
+            )
+        else:
+            input_str = prompt
+        
+        prompt_texts.append(input_str)
+        q_resp_ids.append(q_resp_id)
+    
+    # Generate responses using vLLM
+    logging.info(f"Generating {len(prompt_texts)} responses")
+    all_outputs = llm.generate(prompt_texts, vllm_params, use_tqdm=True)
+    logging.info(f"Generated {len(all_outputs)} responses")
+    
+    # Format responses
+    responses: list[tuple[QuestionResponseId, str, str | None]] = []
+    for q_resp_id, output in tqdm(
+        zip(q_resp_ids, all_outputs), desc="Processing responses", total=len(q_resp_ids)
+    ):
+        generated_text = output.outputs[0].text
+        responses.append((q_resp_id, generated_text, None))
+    
+    return responses
+
+
+def get_putnam_responses_tl(
+    prompts: list[tuple[QuestionResponseId, str]],
+    model_id: str,
+    sampling_params: SamplingParams,
+    local_gen_seed: int,
+) -> list[tuple[QuestionResponseId, str, str | None]]:
+    """Generate responses using TransformerLens for Putnam problems.
+    
+    This is a simplified version that doesn't use FSP since Putnam problems
+    don't use the same dataset structure as IPHR.
+    """   
+    # Set TransformerLens seed for reproducible local generation
+    HookedTransformerConfig.set_seed_everywhere(
+        None,  # type: ignore
+        local_gen_seed,
+    )
+    
+    # Initialize TransformerLens model
+    model = HookedTransformer.from_pretrained(
+        model_name=model_id,
+        device="cuda",
+    )
+    assert model.tokenizer is not None, "Tokenizer is not initialized"
+    
+    # Prepare prompts and generate responses
+    responses: list[tuple[QuestionResponseId, str, str | None]] = []
+    
+    for q_resp_id, prompt in tqdm(prompts, desc="Generating responses"):
+        if is_instruct_model(model_id):
+            input_str = make_chat_prompt(
+                instruction=prompt,
+                tokenizer=model.tokenizer,  # type: ignore
+            )
+        else:
+            input_str = prompt
+        
+        # Tokenize input
+        tokens = model.to_tokens(input_str, prepend_bos=True).to(model.cfg.device)
+        assert isinstance(tokens, torch.Tensor)
+        assert tokens.ndim == 2
+        assert tokens.shape[0] == 1
+        
+        # Generate the full sequence at once
+        with torch.inference_mode():
+            generated = model.generate(
+                tokens,
+                max_new_tokens=sampling_params.max_new_tokens,
+                temperature=sampling_params.temperature,
+                top_p=sampling_params.top_p,
+                return_type="tokens",
+                verbose=False,
+            )
+            assert isinstance(generated, torch.Tensor)
+            assert generated.ndim == 2
+        
+        # Convert output tokens to text
+        generated_text = model.tokenizer.batch_decode(
+            generated[:, tokens.shape[1] :],
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True,
+        )[0]
+        assert isinstance(generated_text, str)
+        
+        responses.append((q_resp_id, generated_text, None))
+    
+    return responses
 
 
 def convert_putnam_to_local_format(
@@ -438,33 +567,22 @@ async def generate_rollouts_local(
         )
     
     # Generate responses using local model
-    # Create qid to dataset mapping (qid is the question name from QuestionResponseId)
-    qid_to_dataset = {q_resp_id.qid: dataset.params.id for q_resp_id, _ in all_prompts}
+    # Note: FSP is not currently supported for Putnam problems due to different data structures
+    if model_id_for_fsp is not None:
+        logging.warning("Few-shot prompting (--model-id-for-fsp) is not currently supported for Putnam problems")
     
     if api == "vllm":
-        results = get_local_responses_vllm(
+        results = get_putnam_responses_vllm(
             prompts=all_prompts,
             model_id=model_id,
-            instr_id="instr-v0",  # Use instr-v0 for Putnam
-            ds_params_list=[dataset.params],
             sampling_params=sampling_params,
-            model_id_for_fsp=model_id_for_fsp,
-            fsp_size=fsp_size,
-            fsp_seed=fsp_seed,
-            qid_to_dataset=qid_to_dataset,
         )
     else:  # ttl
-        results = get_local_responses_tl(
+        results = get_putnam_responses_tl(
             prompts=all_prompts,
             model_id=model_id,
-            instr_id="instr-v0",  # Use instr-v0 for Putnam
-            ds_params_list=[dataset.params],
             sampling_params=sampling_params,
-            model_id_for_fsp=model_id_for_fsp,
-            fsp_size=fsp_size,
-            fsp_seed=fsp_seed,
             local_gen_seed=local_gen_seed,
-            qid_to_dataset=qid_to_dataset,
         )
     
     if not results:

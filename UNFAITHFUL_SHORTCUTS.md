@@ -45,18 +45,7 @@ python scripts/putnam/putnamlike0_save_rollouts.py \
     --verbose
 ```
 
-### Few-Shot Prompting Example
-```bash
-python scripts/putnam/putnamlike0_save_rollouts.py \
-    --dataset_type putnam_2024 \
-    --model_id meta-llama/Llama-3.1-8B \
-    --api vllm \
-    --model-id-for-fsp meta-llama/Llama-3.1-70B \
-    --fsp-size 3 \
-    --fsp-seed 42 \
-    --prefix 3 \
-    --verbose
-```
+**Note**: Few-shot prompting (`--model-id-for-fsp`) is not currently supported for Putnam problems due to different data structures between IPHR and Unfaithful Shortcuts pipelines.
 
 # Data Used In Paper
 
