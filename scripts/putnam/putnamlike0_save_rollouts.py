@@ -47,7 +47,7 @@ import os
 import uuid
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Optional, NamedTuple
+from typing import Any, Optional
 
 import click
 import pandas as pd
@@ -66,16 +66,11 @@ from chainscope.typing import (
     MathQsDataset,
     MathQuestion,
     MathResponse,
+    QuestionResponseId,
     SamplingParams,
 )
 from chainscope.cot_generation import get_local_responses_vllm, get_local_responses_tl
 from chainscope.utils import MODELS_MAP
-
-
-class QuestionResponseId(NamedTuple):
-    """Identifier for a specific question-response pair."""
-    qid: str
-    uuid: str
 
 
 class DatasetType(StrEnum):
