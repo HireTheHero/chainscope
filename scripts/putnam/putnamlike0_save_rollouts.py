@@ -66,7 +66,10 @@ from chainscope.typing import (
     MathQsDataset,
     MathQuestion,
     MathResponse,
+    SamplingParams,
 )
+from chainscope.cot_generation import get_local_responses_vllm, get_local_responses_tl
+from chainscope.utils import MODELS_MAP
 
 
 class DatasetType(StrEnum):
@@ -116,6 +119,115 @@ def load_putnam_results_as_df(yaml_path: Path) -> pd.DataFrame:
     with open(yaml_path) as f:
         data = yaml.safe_load(f)
     return pd.DataFrame(data)
+
+
+def convert_putnam_to_local_format(
+    dataset: MathQsDataset,
+    preamble: str = "",
+    prefix: Optional[int] = None,
+) -> list[tuple[str, str]]:
+    """Convert Putnam dataset to format expected by local generation functions.
+    
+    Args:
+        dataset: Putnam dataset
+        preamble: Preamble text to add before each problem
+        prefix: Only process first N problems if specified
+        
+    Returns:
+        List of (question_id, prompt) tuples
+    """
+    questions = dataset.questions[:prefix] if prefix else dataset.questions
+    prompts = []
+    
+    for question in questions:
+        prompt = f"{preamble}{question.problem}"
+        prompts.append((question.name, prompt))
+    
+    return prompts
+
+
+def convert_local_results_to_putnam(
+    results: list[tuple[str, str, str | None]],
+    dataset: MathQsDataset,
+    model_id: str,
+    epochs: int = 1,
+) -> CotResponses:
+    """Convert local generation results back to Putnam format.
+    
+    Args:
+        results: Results from local generation (question_id, response, fsp)
+        dataset: Original Putnam dataset
+        model_id: Model ID used for generation
+        epochs: Number of epochs processed
+        
+    Returns:
+        CotResponses object in Putnam format
+    """
+    responses_by_qid = {}
+    
+    # Group results by question name
+    for question_name, response, fsp in results:
+        if not response:
+            continue
+            
+        # For multiple epochs, handle attempt numbering
+        if epochs > 1:
+            # Extract base name and attempt number if present
+            if "_attempt_" in question_name:
+                base_name = question_name.rsplit("_attempt_", 1)[0]
+                attempt_num = int(question_name.rsplit("_attempt_", 1)[1])
+            else:
+                base_name = question_name
+                attempt_num = 1
+        else:
+            base_name = question_name
+            attempt_num = 1
+        
+        # Find the original question
+        original_question = None
+        for q in dataset.questions:
+            if q.name == base_name:
+                original_question = q
+                break
+        
+        if original_question is None:
+            logging.warning(f"Could not find original question for {base_name}")
+            continue
+        
+        # Initialize dict for this question if it doesn't exist
+        if question_name not in responses_by_qid:
+            responses_by_qid[question_name] = {}
+            
+        # Add this response with a unique ID
+        responses_by_qid[question_name][str(uuid.uuid4())[:8]] = MathResponse(
+            name=question_name,
+            problem=original_question.problem,
+            solution=original_question.solution,
+            model_thinking=None,  # Local generation doesn't separate thinking
+            model_answer=[response],  # Store as single response
+        )
+    
+    # Sort responses by question name
+    def sort_key(name: str) -> tuple:
+        # Handle both formats: putnam_2024_a1 and putnam_2024_a1_attempt_1
+        parts = name.split('_')
+        if len(parts) >= 4:  # Has problem number
+            year = int(parts[1])
+            prob_type = parts[2][0]  # 'a' or 'b'
+            prob_num = int(parts[2][1])
+            attempt = int(parts[-1]) if len(parts) > 4 else 0
+            return (year, prob_type, prob_num, attempt)
+        return (0, '', 0, 0)  # Fallback for unexpected formats
+
+    sorted_responses = dict(sorted(responses_by_qid.items(), key=lambda x: sort_key(x[0])))
+
+    return CotResponses(
+        responses_by_qid=sorted_responses,
+        model_id=model_id,
+        instr_id="instr-v0",
+        ds_params=dataset.params,
+        sampling_params=DefaultSamplingParams(),
+    )
 
 
 def create_putnam_dataset(dataset_type: DatasetType) -> MathQsDataset:
@@ -246,6 +358,122 @@ def create_processor(
             process_response=get_tuple_or_str_response,
             rate_limiter=rate_limiter,
         )
+
+
+async def generate_rollouts_local(
+    dataset: MathQsDataset,
+    model_id: str,
+    api: str,
+    temperature: float = 0.0,
+    top_p: float = 0.9,
+    max_new_tokens: int = 2000,
+    prefix: Optional[int] = None,
+    preamble: str = "",
+    epochs: int = 1,
+    model_id_for_fsp: Optional[str] = None,
+    fsp_size: int = 5,
+    fsp_seed: int = 42,
+    local_gen_seed: int = 42,
+) -> CotResponses:
+    """Generate rollouts using local models (VLLM or TTL).
+    
+    Args:
+        dataset: Putnam dataset
+        model_id: Model ID for generation
+        api: Local API to use ("vllm" or "ttl")
+        temperature: Sampling temperature
+        top_p: Top-p sampling parameter
+        max_new_tokens: Maximum new tokens to generate
+        prefix: Only process first N problems if specified
+        preamble: Preamble text to add before each problem
+        epochs: Number of times to process each problem
+        model_id_for_fsp: Model ID for few-shot prompting (optional)
+        fsp_size: Number of few-shot examples
+        fsp_seed: Seed for few-shot example selection
+        local_gen_seed: Seed for local generation
+        
+    Returns:
+        CotResponses object
+    """
+    logging.info(f"Using local generation with {api} for model {model_id}")
+    
+    # Convert model ID using MODELS_MAP
+    model_id = MODELS_MAP.get(model_id, model_id)
+    
+    # Create sampling params
+    sampling_params = SamplingParams(
+        temperature=temperature,
+        top_p=top_p,
+        max_new_tokens=max_new_tokens,
+    )
+    
+    # Convert Putnam data to local format
+    prompts = convert_putnam_to_local_format(dataset, preamble, prefix)
+    
+    # Handle multiple epochs
+    all_prompts = []
+    for epoch in range(epochs):
+        for question_name, prompt in prompts:
+            if epochs > 1:
+                epoch_question_name = f"{question_name}_attempt_{epoch + 1}"
+            else:
+                epoch_question_name = question_name
+            all_prompts.append((epoch_question_name, prompt))
+    
+    if not all_prompts:
+        logging.info("No prompts to process")
+        return CotResponses(
+            responses_by_qid={},
+            model_id=model_id,
+            instr_id="instr-v0",
+            ds_params=dataset.params,
+            sampling_params=sampling_params,
+        )
+    
+    # Generate responses using local model
+    if api == "vllm":
+        results = get_local_responses_vllm(
+            prompts=all_prompts,
+            model_id=model_id,
+            instr_id="instr-v0",  # Use instr-v0 for Putnam
+            ds_params_list=[dataset.params],
+            sampling_params=sampling_params,
+            model_id_for_fsp=model_id_for_fsp,
+            fsp_size=fsp_size,
+            fsp_seed=fsp_seed,
+            qid_to_dataset={prompt[0]: dataset.params.id for prompt in all_prompts},
+        )
+    else:  # ttl
+        results = get_local_responses_tl(
+            prompts=all_prompts,
+            model_id=model_id,
+            instr_id="instr-v0",  # Use instr-v0 for Putnam
+            ds_params_list=[dataset.params],
+            sampling_params=sampling_params,
+            model_id_for_fsp=model_id_for_fsp,
+            fsp_size=fsp_size,
+            fsp_seed=fsp_seed,
+            local_gen_seed=local_gen_seed,
+            qid_to_dataset={prompt[0]: dataset.params.id for prompt in all_prompts},
+        )
+    
+    if not results:
+        logging.warning("No results generated")
+        return CotResponses(
+            responses_by_qid={},
+            model_id=model_id,
+            instr_id="instr-v0",
+            ds_params=dataset.params,
+            sampling_params=sampling_params,
+        )
+    
+    # Convert results back to Putnam format
+    return convert_local_results_to_putnam(
+        results=results,
+        dataset=dataset,
+        model_id=model_id,
+        epochs=epochs,
+    )
 
 
 async def generate_rollouts(
@@ -411,6 +639,48 @@ async def generate_rollouts(
     is_flag=True,
     help="Force using OpenRouter even for DeepSeek models",
 )
+@click.option(
+    "--api",
+    type=click.Choice(["vllm", "ttl"]),
+    default=None,
+    help="Use local API for generation (vllm or ttl)",
+)
+@click.option(
+    "--top-p",
+    type=float,
+    default=0.9,
+    help="Top-p sampling parameter for local generation",
+)
+@click.option(
+    "--max-new-tokens",
+    type=int,
+    default=2000,
+    help="Maximum new tokens to generate for local generation",
+)
+@click.option(
+    "--model-id-for-fsp",
+    type=str,
+    default=None,
+    help="Use CoT responses from this model id to use as FSP. Only used if generating responses for a base model.",
+)
+@click.option(
+    "--fsp-size",
+    type=int,
+    default=5,
+    help="Size of FSP to use for generation with --model-id-for-fsp",
+)
+@click.option(
+    "--fsp-seed",
+    type=int,
+    default=42,
+    help="Seed for FSP selection",
+)
+@click.option(
+    "--local-gen-seed",
+    type=int,
+    default=42,
+    help="Seed for local generation",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -422,6 +692,13 @@ def main(
     verbose: bool,
     open_router: bool,
     preamble: str,
+    api: Optional[str],
+    top_p: float,
+    max_new_tokens: int,
+    model_id_for_fsp: Optional[str],
+    fsp_size: int,
+    fsp_seed: int,
+    local_gen_seed: int,
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -433,19 +710,40 @@ def main(
     dataset = create_putnam_dataset(dataset_type_enum)
 
     # Generate rollouts
-    results = asyncio.run(
-        generate_rollouts(
-            dataset=dataset,
-            model_id=model_id,
-            preamble=preamble,
-            max_retries=max_retries,
-            max_parallel=max_parallel,
-            temperature=temperature,
-            epochs=epochs,
-            prefix=prefix,
-            force_open_router=open_router,
+    if api is not None:
+        # Use local generation
+        results = asyncio.run(
+            generate_rollouts_local(
+                dataset=dataset,
+                model_id=model_id,
+                api=api,
+                temperature=temperature,
+                top_p=top_p,
+                max_new_tokens=max_new_tokens,
+                prefix=prefix,
+                preamble=preamble,
+                epochs=epochs,
+                model_id_for_fsp=model_id_for_fsp,
+                fsp_size=fsp_size,
+                fsp_seed=fsp_seed,
+                local_gen_seed=local_gen_seed,
+            )
         )
-    )
+    else:
+        # Use cloud APIs
+        results = asyncio.run(
+            generate_rollouts(
+                dataset=dataset,
+                model_id=model_id,
+                preamble=preamble,
+                max_retries=max_retries,
+                max_parallel=max_parallel,
+                temperature=temperature,
+                epochs=epochs,
+                prefix=prefix,
+                force_open_router=open_router,
+            )
+        )
 
     # Save results
     for i in range(0, 100):

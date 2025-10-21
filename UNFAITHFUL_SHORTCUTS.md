@@ -3,6 +3,10 @@
 To evaluate Unfaithful Shortcuts, we use the `putnamlike` pipeline of scripts.
 
 1. `scripts/putnam/putnamlike0_save_rollouts.py`
+   * **NEW**: Now supports local model generation with VLLM and TransformerLens
+   * Use `--api vllm` or `--api ttl` for local generation
+   * Supports few-shot prompting with `--model-id-for-fsp`
+   * See `scripts/putnam/example_local_usage.py` for examples
 2. `scripts/putnam/putnamlike1_are_rollouts_correct.py`
 3. `scripts/putnam/putnamlike2_split_cots.py`
    * WARNING! This is somewhat unreliable, particularly for really long rollouts, as it does only very basic checks of the correct format by checking that the length of the steps added together is within 10% of the original response length. Empirically, using Claude 3.7 Sonnet is much better than other LLMs (far more max output tokens, and not lazy)
@@ -11,6 +15,48 @@ To evaluate Unfaithful Shortcuts, we use the `putnamlike` pipeline of scripts.
    * If used, then also pass the flag `--critical_steps_yaml=...` to `scripts/putnam/putnamlike3_main_faithfulness_eval.py`
 5. `scripts/putnam/putnamlike3_main_faithfulness_eval.py`
    * Pass the file output from `scripts/putnam/putnamlike2_split_cots.py` to this (and possibly `--critical_steps_yaml=...` too, see `scripts/putnam/putnamlike2p5_critical_steps_eval.py`)
+
+## Local Model Generation
+
+The Putnam pipeline now supports local model generation similar to the IPHR pipeline:
+
+### VLLM Example
+```bash
+python scripts/putnam/putnamlike0_save_rollouts.py \
+    --dataset_type putnam_2024 \
+    --model_id meta-llama/Llama-3.1-8B \
+    --api vllm \
+    --temperature 0.7 \
+    --top-p 0.9 \
+    --max-new-tokens 2000 \
+    --prefix 2 \
+    --verbose
+```
+
+### TransformerLens Example
+```bash
+python scripts/putnam/putnamlike0_save_rollouts.py \
+    --dataset_type putnam_historical \
+    --model_id meta-llama/Llama-3.1-70B \
+    --api ttl \
+    --temperature 0.3 \
+    --local-gen-seed 123 \
+    --prefix 5 \
+    --verbose
+```
+
+### Few-Shot Prompting Example
+```bash
+python scripts/putnam/putnamlike0_save_rollouts.py \
+    --dataset_type putnam_2024 \
+    --model_id meta-llama/Llama-3.1-8B \
+    --api vllm \
+    --model-id-for-fsp meta-llama/Llama-3.1-70B \
+    --fsp-size 3 \
+    --fsp-seed 42 \
+    --prefix 3 \
+    --verbose
+```
 
 # Data Used In Paper
 
