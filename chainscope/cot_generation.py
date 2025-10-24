@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import random
 from pathlib import Path
 from uuid import uuid4
@@ -225,11 +227,42 @@ def get_local_responses_tl(
     )
 
     # Initialize TransformerLens model
-    # Check if model_id is a local path
-    if Path(model_id).exists():
+    # Check if model_id is a local path (starts with /, ./, or ../)
+    is_local_path = model_id.startswith('/') or model_id.startswith('./') or model_id.startswith('../')
+    
+    if is_local_path:
         logging.info(f"Loading model from local path: {model_id}")
-        model = HookedTransformer.from_pretrained_no_processing(
-            model_name=model_id,
+        # Read config to get the model architecture
+        config_path = Path(model_id) / "config.json"
+        with open(config_path) as f:
+            config = json.load(f)
+        
+        # Try to infer the official model name from the config
+        # For Llama models, look at the model_type
+        model_type = config.get("model_type", "")
+        architectures = config.get("architectures", [])
+        
+        # Map to official HF model name for TransformerLens
+        # This is a heuristic - adjust as needed
+        if "llama" in model_type.lower() or any("Llama" in arch for arch in architectures):
+            # Check if it's Llama 3.1 based on vocab size or other indicators
+            # Llama 3.1 has 128256 vocab size
+            vocab_size = config.get("vocab_size", 0)
+            if vocab_size == 128256:
+                # Assume it's Llama 3.1 - use the official name
+                official_name = "meta-llama/Llama-3.1-70B"
+                logging.info(f"Detected Llama 3.1 model, using official name: {official_name}")
+            else:
+                raise ValueError(f"Could not determine official model name for local path: {model_id}")
+        else:
+            raise ValueError(f"Unsupported model type '{model_type}' for local path loading")
+        
+        # Set cache dir to the parent of the local model
+        os.environ["HF_HOME"] = str(Path(model_id).parent)
+        os.environ["TRANSFORMERS_CACHE"] = str(Path(model_id).parent)
+        
+        model = HookedTransformer.from_pretrained(
+            model_name=official_name,
             device="cuda",
             local_files_only=True,
         )
