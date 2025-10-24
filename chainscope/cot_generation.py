@@ -1,5 +1,6 @@
 import logging
 import random
+from pathlib import Path
 from uuid import uuid4
 
 import torch as t
@@ -224,10 +225,19 @@ def get_local_responses_tl(
     )
 
     # Initialize TransformerLens model
-    model = HookedTransformer.from_pretrained(
-        model_name=model_id,
-        device="cuda",
-    )
+    # Check if model_id is a local path
+    if Path(model_id).exists():
+        logging.info(f"Loading model from local path: {model_id}")
+        model = HookedTransformer.from_pretrained_no_processing(
+            model_name=model_id,
+            device="cuda",
+            local_files_only=True,
+        )
+    else:
+        model = HookedTransformer.from_pretrained(
+            model_name=model_id,
+            device="cuda",
+        )
     assert model.tokenizer is not None, "Tokenizer is not initialized"
 
     instr_prefix = "Here is a question with a clear YES or NO answer"
