@@ -1,12 +1,11 @@
-import json
 import logging
-import os
 import random
 from pathlib import Path
 from uuid import uuid4
 
 import torch as t
 from tqdm import tqdm
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformer_lens import HookedTransformer
 from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
 from vllm import LLM
@@ -232,39 +231,45 @@ def get_local_responses_tl(
     
     if is_local_path:
         logging.info(f"Loading model from local path: {model_id}")
-        # Read config to get the model architecture
-        config_path = Path(model_id) / "config.json"
-        with open(config_path) as f:
-            config = json.load(f)
+        # First, read the config to determine the official model name for TransformerLens
+        config = AutoConfig.from_pretrained(model_id, local_files_only=True)
         
-        # Try to infer the official model name from the config
-        # For Llama models, look at the model_type
-        model_type = config.get("model_type", "")
-        architectures = config.get("architectures", [])
+        # Map architecture to official HF model name that TransformerLens recognizes
+        model_type = getattr(config, "model_type", "")
+        architectures = getattr(config, "architectures", [])
         
-        # Map to official HF model name for TransformerLens
-        # This is a heuristic - adjust as needed
         if "llama" in model_type.lower() or any("Llama" in arch for arch in architectures):
-            # Check if it's Llama 3.1 based on vocab size or other indicators
-            # Llama 3.1 has 128256 vocab size
-            vocab_size = config.get("vocab_size", 0)
+            vocab_size = getattr(config, "vocab_size", 0)
             if vocab_size == 128256:
-                # Assume it's Llama 3.1 - use the official name
+                # Llama 3.1
                 official_name = "meta-llama/Llama-3.1-70B"
-                logging.info(f"Detected Llama 3.1 model, using official name: {official_name}")
+            elif vocab_size == 128000:
+                # Llama 3
+                official_name = "meta-llama/Meta-Llama-3-70B"
             else:
-                raise ValueError(f"Could not determine official model name for local path: {model_id}")
+                raise ValueError(f"Unknown Llama variant with vocab_size={vocab_size}")
+            logging.info(f"Detected architecture: {model_type}, using official name: {official_name}")
         else:
-            raise ValueError(f"Unsupported model type '{model_type}' for local path loading")
+            raise ValueError(f"Unsupported model type '{model_type}' for local path loading with TransformerLens")
         
-        # Set cache dir to the parent of the local model
-        os.environ["HF_HOME"] = str(Path(model_id).parent)
-        os.environ["TRANSFORMERS_CACHE"] = str(Path(model_id).parent)
+        logging.info("Loading model and tokenizer from transformers...")
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            local_files_only=True,
+            torch_dtype=t.bfloat16,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_id,
+            local_files_only=True,
+        )
         
+        # Wrap with HookedTransformer using the official name
+        logging.info("Converting to HookedTransformer...")
         model = HookedTransformer.from_pretrained(
             model_name=official_name,
+            hf_model=hf_model,
+            tokenizer=tokenizer,
             device="cuda",
-            local_files_only=True,
         )
     else:
         model = HookedTransformer.from_pretrained(
