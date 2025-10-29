@@ -229,10 +229,12 @@ def get_putnam_responses_tl(
             raise ValueError(f"Unsupported model type '{model_type}' for local path loading with TransformerLens")
         
         logging.info("Loading model and tokenizer from transformers...")
+        # Use device_map="auto" to distribute model across available GPUs
         hf_model = AutoModelForCausalLM.from_pretrained(
             model_id,
             local_files_only=True,
             torch_dtype=torch.bfloat16,
+            device_map="auto",
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_id,
@@ -241,15 +243,30 @@ def get_putnam_responses_tl(
         
         # Wrap with HookedTransformer using the official name
         logging.info("Converting to HookedTransformer...")
+        # Note: HookedTransformer doesn't support device_map, so we pass the already-loaded model
+        # The model is already distributed across GPUs via device_map="auto"
         model = HookedTransformer.from_pretrained(
             model_name=official_name,
             hf_model=hf_model,
             tokenizer=tokenizer,
-            device="cuda",
+            device="cuda",  # This will be overridden by the hf_model's device_map
         )
     else:
+        # For non-local models, load with device_map for multi-GPU support
+        logging.info(f"Loading model from HuggingFace: {model_id}")
+        # First load the HF model with device_map
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        
+        # Wrap with HookedTransformer
         model = HookedTransformer.from_pretrained(
             model_name=model_id,
+            hf_model=hf_model,
+            tokenizer=tokenizer,
             device="cuda",
         )
     assert model.tokenizer is not None, "Tokenizer is not initialized"
