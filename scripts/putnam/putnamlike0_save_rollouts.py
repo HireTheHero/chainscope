@@ -39,6 +39,17 @@ python3 -m dotenv run python3 scripts/putnam/putnamlike0_save_rollouts.py \
     --max_retries=1 \
     --verbose
 
+Or (with local HuggingFace generation for large models on multiple GPUs):
+
+python3 -m dotenv run python3 scripts/putnam/putnamlike0_save_rollouts.py \
+    --dataset_type putnam_historical \
+    --model_id "~/model/huggingface/llama/Llama-3.1-70B/" \
+    --api hf \
+    --temperature 0.3 \
+    --local-gen-seed 123 \
+    --prefix 5 \
+    --verbose
+
 """
 
 import asyncio
@@ -179,6 +190,94 @@ def get_putnam_responses_vllm(
         zip(q_resp_ids, all_outputs), desc="Processing responses", total=len(q_resp_ids)
     ):
         generated_text = output.outputs[0].text
+        responses.append((q_resp_id, generated_text, None))
+    
+    return responses
+
+
+def get_putnam_responses_hf(
+    prompts: list[tuple[QuestionResponseId, str]],
+    model_id: str,
+    sampling_params: SamplingParams,
+    local_gen_seed: int,
+) -> list[tuple[QuestionResponseId, str, str | None]]:
+    """Generate responses using HuggingFace native generation for Putnam problems.
+    
+    This uses HF's native generation with device_map="auto" for multi-GPU support.
+    Works well for large models (70B+) on multiple GPUs.
+    """
+    import torch
+    
+    # Set seed for reproducibility
+    torch.manual_seed(local_gen_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(local_gen_seed)
+    
+    # Check if model_id is a local path
+    is_local_path = model_id.startswith('/') or model_id.startswith('./') or model_id.startswith('../') or model_id.startswith('~')
+    
+    logging.info(f"Loading model from {'local path' if is_local_path else 'HuggingFace'}: {model_id}")
+    
+    # Expand ~ in path if present
+    if is_local_path and model_id.startswith('~'):
+        model_id = os.path.expanduser(model_id)
+    
+    # Load model with device_map="auto" for multi-GPU distribution
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        local_files_only=is_local_path,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_id,
+        local_files_only=is_local_path,
+    )
+    
+    # Set pad token if not set
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    logging.info(f"Model loaded successfully. Device map: {model.hf_device_map}")
+    
+    # Prepare prompts and generate responses
+    responses: list[tuple[QuestionResponseId, str, str | None]] = []
+    
+    for q_resp_id, prompt in tqdm(prompts, desc="Generating responses"):
+        if is_instruct_model(model_id):
+            input_str = make_chat_prompt(
+                instruction=prompt,
+                tokenizer=tokenizer,
+            )
+        else:
+            input_str = prompt
+        
+        # Tokenize input
+        inputs = tokenizer(input_str, return_tensors="pt")
+        
+        # Move inputs to the first device of the model
+        # device_map="auto" handles the rest
+        first_device = next(iter(model.hf_device_map.values()))
+        inputs = {k: v.to(first_device) for k, v in inputs.items()}
+        
+        # Generate
+        with torch.inference_mode():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=sampling_params.max_new_tokens,
+                temperature=sampling_params.temperature,
+                top_p=sampling_params.top_p,
+                do_sample=sampling_params.temperature > 0,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        
+        # Decode only the generated tokens (skip the input)
+        input_length = inputs['input_ids'].shape[1]
+        generated_tokens = outputs[0, input_length:]
+        generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        
         responses.append((q_resp_id, generated_text, None))
     
     return responses
@@ -641,6 +740,13 @@ async def generate_rollouts_local(
             model_id=model_id,
             sampling_params=sampling_params,
         )
+    elif api == "hf":
+        results = get_putnam_responses_hf(
+            prompts=all_prompts,
+            model_id=model_id,
+            sampling_params=sampling_params,
+            local_gen_seed=local_gen_seed,
+        )
     else:  # ttl
         results = get_putnam_responses_tl(
             prompts=all_prompts,
@@ -833,9 +939,9 @@ async def generate_rollouts(
 )
 @click.option(
     "--api",
-    type=click.Choice(["vllm", "ttl"]),
+    type=click.Choice(["vllm", "ttl", "hf"]),
     default=None,
-    help="Use local API for generation (vllm or ttl)",
+    help="Use local API for generation (vllm, ttl, or hf=HuggingFace native)",
 )
 @click.option(
     "--top-p",
