@@ -532,6 +532,7 @@ def convert_local_results_to_putnam(
 
     return CotResponses(
         responses_by_qid=sorted_responses,
+        fsp_by_resp_id=None,
         model_id=model_id,
         instr_id="instr-v0",
         ds_params=dataset.params,
@@ -723,6 +724,7 @@ async def generate_rollouts_local(
         logging.info("No prompts to process")
         return CotResponses(
             responses_by_qid={},
+            fsp_by_resp_id=None,
             model_id=model_id,
             instr_id="instr-v0",
             ds_params=dataset.params,
@@ -759,6 +761,7 @@ async def generate_rollouts_local(
         logging.warning("No results generated")
         return CotResponses(
             responses_by_qid={},
+            fsp_by_resp_id=None,
             model_id=model_id,
             instr_id="instr-v0",
             ds_params=dataset.params,
@@ -868,6 +871,7 @@ async def generate_rollouts(
 
     return CotResponses(
         responses_by_qid=sorted_responses,
+        fsp_by_resp_id=None,
         model_id=model_id,
         instr_id="instr-v0",
         ds_params=dataset.params,
