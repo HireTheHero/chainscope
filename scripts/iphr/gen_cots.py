@@ -17,6 +17,7 @@ from chainscope.api_utils.open_ai_utils import \
 from chainscope.api_utils.open_ai_utils import submit_openai_batch
 from chainscope.cot_generation import (create_batch_of_cot_prompts,
                                        create_cot_responses,
+                                       get_local_responses_hf,
                                        get_local_responses_tl,
                                        get_local_responses_vllm)
 from chainscope.typing import *
@@ -257,9 +258,9 @@ def submit(
 @click.option("--max-new-tokens", type=int, default=2_000)
 @click.option(
     "--api",
-    type=click.Choice(["vllm", "ttl"]),
+    type=click.Choice(["vllm", "ttl", "hf"]),
     required=True,
-    help="Local API to use for generation",
+    help="Local API to use for generation (vllm, ttl, or hf=HuggingFace native)",
 )
 @click.option(
     "--model-id-for-fsp",
@@ -434,6 +435,19 @@ def local(
             model_id_for_fsp=model_id_for_fsp,
             fsp_size=fsp_size,
             fsp_seed=fsp_seed,
+            qid_to_dataset=qid_to_dataset,
+        )
+    elif api == "hf":
+        results = get_local_responses_hf(
+            prompts=all_prompts,
+            model_id=model_id,
+            instr_id=instr_id,
+            ds_params_list=dataset_params_list,
+            sampling_params=sampling_params,
+            model_id_for_fsp=model_id_for_fsp,
+            fsp_size=fsp_size,
+            fsp_seed=fsp_seed,
+            local_gen_seed=local_gen_seed,
             qid_to_dataset=qid_to_dataset,
         )
     else:  # ttl

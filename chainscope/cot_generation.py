@@ -181,6 +181,157 @@ def get_local_responses_vllm(
     return responses
 
 
+def get_local_responses_hf(
+    prompts: list[tuple[QuestionResponseId, str]],
+    model_id: str,
+    instr_id: str,
+    ds_params_list: list[DatasetParams],
+    sampling_params: SamplingParams,
+    model_id_for_fsp: str | None,
+    fsp_size: int,
+    fsp_seed: int,
+    local_gen_seed: int,
+    qid_to_dataset: dict[str, str],
+) -> list[tuple[QuestionResponseId, str, str | None]]:
+    """Generate responses using HuggingFace native generation.
+    
+    Uses device_map="auto" for multi-GPU distribution. Works well for large models.
+    
+    Args:
+        prompts: List of (question ID, prompt text) tuples
+        model_id: Name of the model to use
+        instr_id: Instruction ID
+        ds_params_list: List of dataset parameters
+        sampling_params: Sampling parameters
+        model_id_for_fsp: Model ID for few-shot prompting (optional)
+        fsp_size: Number of few-shot examples
+        fsp_seed: Seed for few-shot example selection
+        local_gen_seed: Seed for generation
+        qid_to_dataset: Mapping from question IDs to dataset IDs
+        
+    Returns:
+        List of (question ID, generated response, fsp_prompt or None) tuples
+    """
+    import os
+    
+    assert instr_id == "instr-wm", "Only instr-wm is supported for local generation"
+    if model_id_for_fsp is not None:
+        assert not is_instruct_model(model_id), "Why?"
+    
+    # Initialize caches
+    instruction_cache: dict[str, Instructions] = {}
+    cot_responses_cache: dict[str, CotResponses] = {}
+    qs_dataset_cache: dict[str, QsDataset] = {}
+    
+    # Set seed for reproducibility
+    t.manual_seed(local_gen_seed)
+    if t.cuda.is_available():
+        t.cuda.manual_seed_all(local_gen_seed)
+    
+    # Check if model_id is a local path
+    is_local_path = model_id.startswith('/') or model_id.startswith('./') or model_id.startswith('../') or model_id.startswith('~')
+    
+    logging.info(f"Loading model from {'local path' if is_local_path else 'HuggingFace'}: {model_id}")
+    
+    # Expand ~ in path if present
+    if is_local_path and model_id.startswith('~'):
+        model_id = os.path.expanduser(model_id)
+    
+    # Load model with device_map="auto" for multi-GPU distribution
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        local_files_only=is_local_path,
+        torch_dtype=t.bfloat16,
+        device_map="auto",
+    )
+    
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_id,
+        local_files_only=is_local_path,
+    )
+    
+    # Set pad token if not set
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    logging.info(f"Model loaded successfully. Device map: {model.hf_device_map}")
+    
+    instr_prefix = "Here is a question with a clear YES or NO answer"
+    stop_tokens = ["**NO**", "**YES**", "\n\nNO", "\n\nYES", instr_prefix]
+    
+    # Prepare prompts and generate responses
+    responses: list[tuple[QuestionResponseId, str, str | None]] = []
+    
+    for q_resp_id, prompt in tqdm(prompts, desc="Generating responses"):
+        current_fsp_prompt: str | None = None
+        if is_instruct_model(model_id):
+            input_str = make_chat_prompt(
+                instruction=prompt,
+                tokenizer=tokenizer,
+            )
+        else:
+            # Get FSP prompt for this dataset if needed
+            if model_id_for_fsp is not None:
+                dataset_id = qid_to_dataset[q_resp_id.qid]
+                ds_idx = next(
+                    i for i, ds in enumerate(ds_params_list) if ds.id == dataset_id
+                )
+                ds_params = ds_params_list[ds_idx]
+                fsp_prompt = build_fsp_prompt(
+                    model_id_for_fsp=model_id_for_fsp,
+                    fsp_size=fsp_size,
+                    instr_id=instr_id,
+                    ds_params=ds_params,
+                    sampling_params=sampling_params,
+                    fsp_seed=fsp_seed,
+                    instruction_cache=instruction_cache,
+                    cot_responses_cache=cot_responses_cache,
+                    qs_dataset_cache=qs_dataset_cache,
+                )
+                input_str = f"{fsp_prompt}\n\n{prompt}"
+                current_fsp_prompt = fsp_prompt
+            else:
+                input_str = prompt
+        
+        # Tokenize input
+        inputs = tokenizer(input_str, return_tensors="pt")
+        
+        # Move inputs to the first device of the model
+        first_device = next(iter(model.hf_device_map.values()))
+        inputs = {k: v.to(first_device) for k, v in inputs.items()}
+        
+        # Generate
+        with t.inference_mode():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=sampling_params.max_new_tokens,
+                temperature=sampling_params.temperature,
+                top_p=sampling_params.top_p,
+                do_sample=sampling_params.temperature > 0,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        
+        # Decode only the generated tokens (skip the input)
+        input_length = inputs['input_ids'].shape[1]
+        generated_tokens = outputs[0, input_length:]
+        generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        
+        # Handle stop tokens (truncate at first occurrence)
+        for stop_token in stop_tokens:
+            if stop_token in generated_text:
+                generated_text = generated_text.split(stop_token)[0]
+                break
+        
+        # Clean up the instr_prefix if it appears
+        if instr_prefix in generated_text:
+            generated_text = generated_text.replace(instr_prefix, "")
+        
+        responses.append((q_resp_id, generated_text, current_fsp_prompt))
+    
+    return responses
+
+
 def get_local_responses_tl(
     prompts: list[tuple[QuestionResponseId, str]],
     model_id: str,
