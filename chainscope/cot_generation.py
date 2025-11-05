@@ -51,6 +51,10 @@ def _compute_and_export_metrics(
             # is a tuple of (num_layers,) tensors with shape (batch_size, seq_len, hidden_dim)
             last_layer_states = [step[-1] for step in hidden_states]
             
+            # Convert to float32 if needed (scikit-learn doesn't support bfloat16)
+            last_layer_states = [state.float() if state.dtype == t.bfloat16 else state 
+                                 for state in last_layer_states]
+            
             # Compute metric matrix
             if metric_type == "phi":
                 # For phi, we need to specify split_index
