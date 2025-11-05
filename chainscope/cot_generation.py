@@ -55,9 +55,14 @@ def _compute_and_export_metrics(
             last_layer_states = [state.float() if state.dtype == t.bfloat16 else state 
                                  for state in last_layer_states]
             
-            # Flatten each state to 1D vector for metric computation
-            # Take the last token's hidden state from each generation step
-            last_layer_states = [state[0, -1, :] for state in last_layer_states]
+            logging.info(f"Response {idx}: {len(last_layer_states)} generation steps, "
+                        f"each with shape {last_layer_states[0].shape}")
+            
+            # Skip responses with too few generation steps (need at least 2 for meaningful metric)
+            if len(last_layer_states) < 2:
+                logging.warning(f"Skipping Response {idx}: Only {len(last_layer_states)} generation step(s). "
+                               f"Need at least 2 steps for metric computation.")
+                continue
             
             # Compute metric matrix
             if metric_type == "phi":
