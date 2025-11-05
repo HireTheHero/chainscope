@@ -128,6 +128,10 @@ def _compute_and_export_metrics(
             last_layer_states = [state.float() if state.dtype == torch.bfloat16 else state 
                                  for state in last_layer_states]
             
+            # Flatten each state to 1D vector for metric computation
+            # Take the last token's hidden state from each generation step
+            last_layer_states = [state[0, -1, :] for state in last_layer_states]
+            
             # Compute metric matrix
             if metric_type == "phi":
                 # For phi, we need to specify split_index
