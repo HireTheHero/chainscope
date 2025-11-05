@@ -293,6 +293,23 @@ def submit(
     is_flag=True,
     help="Only generate CoTs for unfaithful pairs identified in faithfulness YAMLs",
 )
+@click.option(
+    "--compute-metric",
+    is_flag=True,
+    help="Compute and export metrics (only works with --api hf)",
+)
+@click.option(
+    "--metric",
+    type=click.Choice(["mi", "phi"]),
+    default="mi",
+    help="Type of metric to compute (mi or phi)",
+)
+@click.option(
+    "--metric-path",
+    type=str,
+    default=None,
+    help="Path to export metric visualizations",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -309,6 +326,9 @@ def local(
     test: bool,
     verbose: bool,
     unfaithful_only: bool,
+    compute_metric: bool,
+    metric: str,
+    metric_path: str | None,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -424,6 +444,15 @@ def local(
         ]
         logging.warning(f"Filtered to {len(all_prompts)} unfaithful pairs")
 
+    # Validate metric computation arguments
+    if compute_metric:
+        if api != "hf":
+            logging.error("--compute-metric only works with --api hf")
+            return
+        if metric_path is None:
+            logging.error("--metric-path is required when --compute-metric is set")
+            return
+    
     # Process using local model
     if api == "vllm":
         results = get_local_responses_vllm(
@@ -449,6 +478,9 @@ def local(
             fsp_seed=fsp_seed,
             local_gen_seed=local_gen_seed,
             qid_to_dataset=qid_to_dataset,
+            compute_metric=compute_metric,
+            metric_type=metric,
+            metric_path=metric_path,
         )
     else:  # ttl
         results = get_local_responses_tl(

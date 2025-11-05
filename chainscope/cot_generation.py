@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 from pathlib import Path
 from uuid import uuid4
@@ -14,6 +15,78 @@ from vllm import SamplingParams as VLLMSamplingParams
 from chainscope.questions import QsDataset
 from chainscope.typing import *
 from chainscope.utils import is_instruct_model, make_chat_prompt
+
+
+def _compute_and_export_metrics(
+    all_hidden_states: list,
+    metric_type: str,
+    metric_path: str,
+    model_id: str,
+):
+    """Compute and export metrics from hidden states.
+    
+    Args:
+        all_hidden_states: List of hidden states from model generation
+        metric_type: Type of metric to compute ('mi' or 'phi')
+        metric_path: Path to export metric visualizations
+        model_id: Model ID for title generation
+    """
+    try:
+        from src import compute_metric_matrix
+        from eval import save_matrix_viz
+    except ImportError:
+        logging.error("LINE package not installed. Install with: uv pip install -e ../LINE")
+        return
+    
+    logging.info(f"Computing {metric_type.upper()} metrics from {len(all_hidden_states)} responses...")
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(metric_path, exist_ok=True)
+    
+    # Process each response's hidden states
+    for idx, hidden_states in enumerate(tqdm(all_hidden_states, desc=f"Computing {metric_type.upper()}")):
+        try:
+            # Extract last layer states from each generation step
+            # hidden_states is a tuple of (num_generated_tokens,) where each element
+            # is a tuple of (num_layers,) tensors with shape (batch_size, seq_len, hidden_dim)
+            last_layer_states = [step[-1] for step in hidden_states]
+            
+            # Compute metric matrix
+            if metric_type == "phi":
+                # For phi, we need to specify split_index
+                split_index = t.numel(last_layer_states[0]) // 2
+                metric_matrix = compute_metric_matrix(
+                    last_layer_states,
+                    metric=metric_type,
+                    method='knn',
+                    split_index=split_index,
+                )
+            else:
+                metric_matrix = compute_metric_matrix(
+                    last_layer_states,
+                    metric=metric_type,
+                    method='knn',
+                )
+            
+            # Save visualization
+            model_name = model_id.split("/")[-1]
+            output_file = os.path.join(metric_path, f'response_{idx}_{metric_type}.png')
+            save_matrix_viz(
+                metric_matrix,
+                file_path=output_file,
+                title=f'{model_name} - {metric_type.upper()} Matrix (Response {idx})',
+                metric_type=metric_type,
+                figsize=(10, 8),
+                dpi=300,
+                show_annotations=False,
+            )
+            logging.info(f"Saved {metric_type.upper()} visualization to {output_file}")
+            
+        except Exception as e:
+            logging.error(f"Error computing metrics for response {idx}: {e}")
+            continue
+    
+    logging.info(f"Metric computation complete. Results saved to {metric_path}")
 
 
 def build_fsp_prompt(
@@ -192,6 +265,9 @@ def get_local_responses_hf(
     fsp_seed: int,
     local_gen_seed: int,
     qid_to_dataset: dict[str, str],
+    compute_metric: bool = False,
+    metric_type: str = "mi",
+    metric_path: str | None = None,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation.
     
@@ -208,6 +284,9 @@ def get_local_responses_hf(
         fsp_seed: Seed for few-shot example selection
         local_gen_seed: Seed for generation
         qid_to_dataset: Mapping from question IDs to dataset IDs
+        compute_metric: Whether to compute and export metrics
+        metric_type: Type of metric to compute ('mi' or 'phi')
+        metric_path: Path to export metric visualizations
         
     Returns:
         List of (question ID, generated response, fsp_prompt or None) tuples
@@ -261,6 +340,7 @@ def get_local_responses_hf(
     
     # Prepare prompts and generate responses
     responses: list[tuple[QuestionResponseId, str, str | None]] = []
+    all_hidden_states = [] if compute_metric else None
     
     for q_resp_id, prompt in tqdm(prompts, desc="Generating responses"):
         current_fsp_prompt: str | None = None
@@ -310,11 +390,20 @@ def get_local_responses_hf(
                 do_sample=sampling_params.temperature > 0,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
+                output_hidden_states=compute_metric,
+                return_dict_in_generate=compute_metric,
             )
         
+        # Extract hidden states if requested
+        if compute_metric and hasattr(outputs, 'hidden_states'):
+            all_hidden_states.append(outputs.hidden_states)
+        
         # Decode only the generated tokens (skip the input)
-        input_length = inputs['input_ids'].shape[1]
-        generated_tokens = outputs[0, input_length:]
+        if compute_metric:
+            generated_tokens = outputs.sequences[0, inputs['input_ids'].shape[1]:]
+        else:
+            input_length = inputs['input_ids'].shape[1]
+            generated_tokens = outputs[0, input_length:]
         generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
         # Handle stop tokens (truncate at first occurrence)
@@ -328,6 +417,15 @@ def get_local_responses_hf(
             generated_text = generated_text.replace(instr_prefix, "")
         
         responses.append((q_resp_id, generated_text, current_fsp_prompt))
+    
+    # Compute and export metrics if requested
+    if compute_metric and all_hidden_states and metric_path:
+        _compute_and_export_metrics(
+            all_hidden_states=all_hidden_states,
+            metric_type=metric_type,
+            metric_path=metric_path,
+            model_id=model_id,
+        )
     
     return responses
 

@@ -90,6 +90,78 @@ from chainscope.typing import (
 from chainscope.utils import MODELS_MAP, is_instruct_model, make_chat_prompt
 
 
+def _compute_and_export_metrics(
+    all_hidden_states: list,
+    metric_type: str,
+    metric_path: str,
+    model_id: str,
+):
+    """Compute and export metrics from hidden states.
+    
+    Args:
+        all_hidden_states: List of hidden states from model generation
+        metric_type: Type of metric to compute ('mi' or 'phi')
+        metric_path: Path to export metric visualizations
+        model_id: Model ID for title generation
+    """
+    try:
+        from src import compute_metric_matrix
+        from eval import save_matrix_viz
+    except ImportError:
+        logging.error("LINE package not installed. Install with: uv pip install -e ../LINE")
+        return
+    
+    logging.info(f"Computing {metric_type.upper()} metrics from {len(all_hidden_states)} responses...")
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(metric_path, exist_ok=True)
+    
+    # Process each response's hidden states
+    for idx, hidden_states in enumerate(tqdm(all_hidden_states, desc=f"Computing {metric_type.upper()}")):
+        try:
+            # Extract last layer states from each generation step
+            # hidden_states is a tuple of (num_generated_tokens,) where each element
+            # is a tuple of (num_layers,) tensors with shape (batch_size, seq_len, hidden_dim)
+            last_layer_states = [step[-1] for step in hidden_states]
+            
+            # Compute metric matrix
+            if metric_type == "phi":
+                # For phi, we need to specify split_index
+                split_index = torch.numel(last_layer_states[0]) // 2
+                metric_matrix = compute_metric_matrix(
+                    last_layer_states,
+                    metric=metric_type,
+                    method='knn',
+                    split_index=split_index,
+                )
+            else:
+                metric_matrix = compute_metric_matrix(
+                    last_layer_states,
+                    metric=metric_type,
+                    method='knn',
+                )
+            
+            # Save visualization
+            model_name = model_id.split("/")[-1]
+            output_file = os.path.join(metric_path, f'response_{idx}_{metric_type}.png')
+            save_matrix_viz(
+                metric_matrix,
+                file_path=output_file,
+                title=f'{model_name} - {metric_type.upper()} Matrix (Response {idx})',
+                metric_type=metric_type,
+                figsize=(10, 8),
+                dpi=300,
+                show_annotations=False,
+            )
+            logging.info(f"Saved {metric_type.upper()} visualization to {output_file}")
+            
+        except Exception as e:
+            logging.error(f"Error computing metrics for response {idx}: {e}")
+            continue
+    
+    logging.info(f"Metric computation complete. Results saved to {metric_path}")
+
+
 class DatasetType(StrEnum):
     PUTNAM_HISTORICAL = "putnam_historical"  # For the historical dataset
     PUTNAM_2024 = "putnam_2024"  # For 2024 problems
@@ -200,11 +272,23 @@ def get_putnam_responses_hf(
     model_id: str,
     sampling_params: SamplingParams,
     local_gen_seed: int,
+    compute_metric: bool = False,
+    metric_type: str = "mi",
+    metric_path: Optional[str] = None,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation for Putnam problems.
     
     This uses HF's native generation with device_map="auto" for multi-GPU support.
     Works well for large models (70B+) on multiple GPUs.
+    
+    Args:
+        prompts: List of (question ID, prompt text) tuples
+        model_id: Model ID for generation
+        sampling_params: Sampling parameters
+        local_gen_seed: Seed for generation
+        compute_metric: Whether to compute and export metrics
+        metric_type: Type of metric to compute ('mi' or 'phi')
+        metric_path: Path to export metric visualizations
     """
     import torch
     
@@ -243,6 +327,7 @@ def get_putnam_responses_hf(
     
     # Prepare prompts and generate responses
     responses: list[tuple[QuestionResponseId, str, str | None]] = []
+    all_hidden_states = [] if compute_metric else None
     
     for q_resp_id, prompt in tqdm(prompts, desc="Generating responses"):
         if is_instruct_model(model_id):
@@ -271,14 +356,32 @@ def get_putnam_responses_hf(
                 do_sample=sampling_params.temperature > 0,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
+                output_hidden_states=compute_metric,
+                return_dict_in_generate=compute_metric,
             )
         
+        # Extract hidden states if requested
+        if compute_metric and hasattr(outputs, 'hidden_states'):
+            all_hidden_states.append(outputs.hidden_states)
+        
         # Decode only the generated tokens (skip the input)
-        input_length = inputs['input_ids'].shape[1]
-        generated_tokens = outputs[0, input_length:]
+        if compute_metric:
+            generated_tokens = outputs.sequences[0, inputs['input_ids'].shape[1]:]
+        else:
+            input_length = inputs['input_ids'].shape[1]
+            generated_tokens = outputs[0, input_length:]
         generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
         responses.append((q_resp_id, generated_text, None))
+    
+    # Compute and export metrics if requested
+    if compute_metric and all_hidden_states and metric_path:
+        _compute_and_export_metrics(
+            all_hidden_states=all_hidden_states,
+            metric_type=metric_type,
+            metric_path=metric_path,
+            model_id=model_id,
+        )
     
     return responses
 
@@ -684,6 +787,9 @@ async def generate_rollouts_local(
     fsp_size: int = 5,
     fsp_seed: int = 42,
     local_gen_seed: int = 42,
+    compute_metric: bool = False,
+    metric_type: str = "mi",
+    metric_path: Optional[str] = None,
 ) -> CotResponses:
     """Generate rollouts using local models (VLLM or TTL).
     
@@ -748,6 +854,9 @@ async def generate_rollouts_local(
             model_id=model_id,
             sampling_params=sampling_params,
             local_gen_seed=local_gen_seed,
+            compute_metric=compute_metric,
+            metric_type=metric_type,
+            metric_path=metric_path,
         )
     else:  # ttl
         results = get_putnam_responses_tl(
@@ -983,6 +1092,23 @@ async def generate_rollouts(
     default=42,
     help="Seed for local generation",
 )
+@click.option(
+    "--compute-metric",
+    is_flag=True,
+    help="Compute and export metrics (only works with --api hf)",
+)
+@click.option(
+    "--metric",
+    type=click.Choice(["mi", "phi"]),
+    default="mi",
+    help="Type of metric to compute (mi or phi)",
+)
+@click.option(
+    "--metric-path",
+    type=str,
+    default=None,
+    help="Path to export metric visualizations",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1001,6 +1127,9 @@ def main(
     fsp_size: int,
     fsp_seed: int,
     local_gen_seed: int,
+    compute_metric: bool,
+    metric: str,
+    metric_path: Optional[str],
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -1011,6 +1140,15 @@ def main(
     # Create dataset directly based on type
     dataset = create_putnam_dataset(dataset_type_enum)
 
+    # Validate metric computation arguments
+    if compute_metric:
+        if api != "hf":
+            logging.error("--compute-metric only works with --api hf")
+            return
+        if metric_path is None:
+            logging.error("--metric-path is required when --compute-metric is set")
+            return
+    
     # Generate rollouts
     if api is not None:
         # Use local generation
@@ -1029,6 +1167,9 @@ def main(
                 fsp_size=fsp_size,
                 fsp_seed=fsp_seed,
                 local_gen_seed=local_gen_seed,
+                compute_metric=compute_metric,
+                metric_type=metric,
+                metric_path=metric_path,
             )
         )
     else:
