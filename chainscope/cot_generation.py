@@ -485,6 +485,9 @@ def get_local_responses_hf(
                 metric_path=metric_path,
                 model_id=model_id,
             )
+            # Free memory immediately to prevent OOM
+            del outputs
+            t.cuda.empty_cache()
 
     return responses
 

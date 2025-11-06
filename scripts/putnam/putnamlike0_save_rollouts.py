@@ -441,6 +441,9 @@ def get_putnam_responses_hf(
                 metric_path=metric_path,
                 model_id=model_id,
             )
+            # Free memory immediately to prevent OOM
+            del outputs
+            torch.cuda.empty_cache()
 
     return responses
 
