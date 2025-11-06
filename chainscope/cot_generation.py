@@ -22,27 +22,31 @@ def _compute_and_export_metrics(
     metric_type: str,
     metric_path: str,
     model_id: str,
+    export_json: bool = False,
 ):
     """Compute and export metrics from hidden states.
-    
+
     Args:
         all_hidden_states: List of hidden states from model generation
         metric_type: Type of metric to compute ('mi' or 'phi')
         metric_path: Path to export metric visualizations
         model_id: Model ID for title generation
+        export_json: Whether to export JSON alongside PNG for multi-token responses
     """
+    import json
+
     try:
         from src import compute_metric_matrix
         from eval import save_matrix_viz
     except ImportError:
         logging.error("LINE package not installed. Install with: uv pip install -e ../LINE")
         return
-    
+
     logging.info(f"Computing {metric_type.upper()} metrics from {len(all_hidden_states)} responses...")
-    
+
     # Create output directory if it doesn't exist
     os.makedirs(metric_path, exist_ok=True)
-    
+
     # Process each response's hidden states
     for idx, hidden_states in enumerate(tqdm(all_hidden_states, desc=f"Computing {metric_type.upper()}")):
         try:
@@ -50,21 +54,53 @@ def _compute_and_export_metrics(
             # hidden_states is a tuple of (num_generated_tokens,) where each element
             # is a tuple of (num_layers,) tensors with shape (batch_size, seq_len, hidden_dim)
             last_layer_states = [step[-1] for step in hidden_states]
-            
+
             # Convert to float32 if needed (scikit-learn doesn't support bfloat16)
-            last_layer_states = [state.float() if state.dtype == t.bfloat16 else state 
+            last_layer_states = [state.float() if state.dtype == t.bfloat16 else state
                                  for state in last_layer_states]
-            
+
             logging.info(f"Response {idx}: {len(last_layer_states)} generation steps, "
                         f"each with shape {last_layer_states[0].shape}")
-            
-            # Skip responses with too few generation steps (need at least 2 for meaningful metric)
+
+            # Handle single-token responses (export single-valued metric as JSON)
             if len(last_layer_states) < 2:
-                logging.warning(f"Skipping Response {idx}: Only {len(last_layer_states)} generation step(s). "
-                               f"Need at least 2 steps for metric computation.")
+                logging.info(f"Response {idx}: Single-token response detected. "
+                            f"Computing single-valued {metric_type.upper()} metric.")
+
+                # Compute single-valued metric from the single hidden state
+                # For MI: compute self-information (entropy of the state)
+                # For Phi: use the same approach
+                single_state = last_layer_states[0]
+
+                # Compute metric using the same framework but with single state
+                if metric_type == "phi":
+                    split_index = t.numel(single_state) // 2
+                    metric_value = compute_metric_matrix(
+                        [single_state],
+                        metric=metric_type,
+                        method='knn',
+                        split_index=split_index,
+                    )[0, 0]  # Extract scalar from 1x1 matrix
+                else:
+                    metric_value = compute_metric_matrix(
+                        [single_state],
+                        metric=metric_type,
+                        method='knn',
+                    )[0, 0]  # Extract scalar from 1x1 matrix
+
+                # Export as JSON
+                metric_data = {
+                    "metric_type": metric_type,
+                    "metric_value": float(metric_value),
+                }
+
+                output_file = os.path.join(metric_path, f'response_{idx}_{metric_type}_single.json')
+                with open(output_file, 'w') as f:
+                    json.dump(metric_data, f, indent=2)
+                logging.info(f"Saved {metric_type.upper()} single-valued metric to {output_file}")
                 continue
-            
-            # Compute metric matrix
+
+            # Compute metric matrix for multi-token responses
             if metric_type == "phi":
                 # For phi, we need to specify split_index
                 split_index = t.numel(last_layer_states[0]) // 2
@@ -80,8 +116,8 @@ def _compute_and_export_metrics(
                     metric=metric_type,
                     method='knn',
                 )
-            
-            # Save visualization
+
+            # Save visualization (PNG)
             model_name = model_id.split("/")[-1]
             output_file = os.path.join(metric_path, f'response_{idx}_{metric_type}.png')
             save_matrix_viz(
@@ -94,11 +130,22 @@ def _compute_and_export_metrics(
                 show_annotations=False,
             )
             logging.info(f"Saved {metric_type.upper()} visualization to {output_file}")
-            
+
+            # Optionally export JSON alongside PNG for multi-token responses
+            if export_json:
+                metric_data = {
+                    "metric_type": metric_type,
+                    "metric_matrix": metric_matrix.tolist(),
+                }
+                json_file = os.path.join(metric_path, f'response_{idx}_{metric_type}.json')
+                with open(json_file, 'w') as f:
+                    json.dump(metric_data, f, indent=2)
+                logging.info(f"Saved {metric_type.upper()} matrix data to {json_file}")
+
         except Exception as e:
             logging.error(f"Error computing metrics for response {idx}: {e}")
             continue
-    
+
     logging.info(f"Metric computation complete. Results saved to {metric_path}")
 
 
