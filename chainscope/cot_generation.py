@@ -397,12 +397,15 @@ def get_local_responses_hf(
     
     instr_prefix = "Here is a question with a clear YES or NO answer"
     stop_tokens = ["**NO**", "**YES**", "\n\nNO", "\n\nYES", instr_prefix]
-    
+
     # Prepare prompts and generate responses
     responses: list[tuple[QuestionResponseId, str, str | None]] = []
-    all_hidden_states = [] if compute_metric else None
-    
-    for q_resp_id, prompt in tqdm(prompts, desc="Generating responses"):
+
+    # Create metric output directory if needed
+    if compute_metric and metric_path:
+        os.makedirs(metric_path, exist_ok=True)
+
+    for idx, (q_resp_id, prompt) in enumerate(tqdm(prompts, desc="Generating responses")):
         current_fsp_prompt: str | None = None
         if is_instruct_model(model_id):
             input_str = make_chat_prompt(
@@ -432,14 +435,14 @@ def get_local_responses_hf(
                 current_fsp_prompt = fsp_prompt
             else:
                 input_str = prompt
-        
+
         # Tokenize input
         inputs = tokenizer(input_str, return_tensors="pt")
-        
+
         # Move inputs to the first device of the model
         first_device = next(iter(model.hf_device_map.values()))
         inputs = {k: v.to(first_device) for k, v in inputs.items()}
-        
+
         # Generate
         with t.inference_mode():
             outputs = model.generate(
@@ -453,11 +456,7 @@ def get_local_responses_hf(
                 output_hidden_states=compute_metric,
                 return_dict_in_generate=compute_metric,
             )
-        
-        # Extract hidden states if requested
-        if compute_metric and hasattr(outputs, 'hidden_states'):
-            all_hidden_states.append(outputs.hidden_states)
-        
+
         # Decode only the generated tokens (skip the input)
         if compute_metric:
             generated_tokens = outputs.sequences[0, inputs['input_ids'].shape[1]:]
@@ -465,28 +464,28 @@ def get_local_responses_hf(
             input_length = inputs['input_ids'].shape[1]
             generated_tokens = outputs[0, input_length:]
         generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-        
+
         # Handle stop tokens (truncate at first occurrence)
         for stop_token in stop_tokens:
             if stop_token in generated_text:
                 generated_text = generated_text.split(stop_token)[0]
                 break
-        
+
         # Clean up the instr_prefix if it appears
         if instr_prefix in generated_text:
             generated_text = generated_text.replace(instr_prefix, "")
-        
+
         responses.append((q_resp_id, generated_text, current_fsp_prompt))
-    
-    # Compute and export metrics if requested
-    if compute_metric and all_hidden_states and metric_path:
-        _compute_and_export_metrics(
-            all_hidden_states=all_hidden_states,
-            metric_type=metric_type,
-            metric_path=metric_path,
-            model_id=model_id,
-        )
-    
+
+        # Compute and export metrics immediately after generation
+        if compute_metric and hasattr(outputs, 'hidden_states') and metric_path:
+            _compute_and_export_metrics(
+                all_hidden_states=[outputs.hidden_states],
+                metric_type=metric_type,
+                metric_path=metric_path,
+                model_id=model_id,
+            )
+
     return responses
 
 
