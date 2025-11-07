@@ -310,6 +310,11 @@ def submit(
     default=None,
     help="Path to export metric visualizations",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Enable debug mode with verbose parallel execution logging",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -329,6 +334,7 @@ def local(
     compute_metric: bool,
     metric: str,
     metric_path: str | None,
+    debug: bool,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -481,6 +487,7 @@ def local(
             compute_metric=compute_metric,
             metric_type=metric,
             metric_path=metric_path,
+            debug=debug,
         )
     else:  # ttl
         results = get_local_responses_tl(

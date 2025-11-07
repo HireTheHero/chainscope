@@ -97,6 +97,7 @@ def _compute_and_export_metrics(
     metric_path: str,
     model_id: str,
     export_json: bool = False,
+    debug: bool = False,
 ):
     """Compute and export metrics from hidden states of a single response.
 
@@ -107,6 +108,7 @@ def _compute_and_export_metrics(
         metric_path: Path to export metric visualizations
         model_id: Model ID for title generation
         export_json: Whether to export JSON alongside PNG for multi-token responses
+        debug: Enable debug mode with verbose parallel execution logging
     """
     import json
 
@@ -151,12 +153,14 @@ def _compute_and_export_metrics(
                     metric=metric_type,
                     method='knn',
                     split_index=split_index,
+                    debug=debug,
                 )[0, 0]  # Extract scalar from 1x1 matrix
             else:
                 metric_value = compute_metric_matrix(
                     [single_state],
                     metric=metric_type,
                     method='knn',
+                    debug=debug,
                 )[0, 0]  # Extract scalar from 1x1 matrix
 
             # Export as JSON
@@ -180,12 +184,14 @@ def _compute_and_export_metrics(
                 metric=metric_type,
                 method='knn',
                 split_index=split_index,
+                debug=debug,
             )
         else:
             metric_matrix = compute_metric_matrix(
                 last_layer_states,
                 metric=metric_type,
                 method='knn',
+                debug=debug,
             )
 
         # Save visualization (PNG)
@@ -330,6 +336,7 @@ def get_putnam_responses_hf(
     compute_metric: bool = False,
     metric_type: str = "mi",
     metric_path: Optional[str] = None,
+    debug: bool = False,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation for Putnam problems.
     
@@ -436,6 +443,7 @@ def get_putnam_responses_hf(
                 metric_type=metric_type,
                 metric_path=metric_path,
                 model_id=model_id,
+                debug=debug,
             )
             # Free memory immediately to prevent OOM
             del outputs
@@ -915,6 +923,7 @@ async def generate_rollouts_local(
             compute_metric=compute_metric,
             metric_type=metric_type,
             metric_path=metric_path,
+            debug=debug,
         )
     else:  # ttl
         results = get_putnam_responses_tl(
@@ -1167,6 +1176,11 @@ async def generate_rollouts(
     default=None,
     help="Path to export metric visualizations",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Enable debug mode with verbose parallel execution logging",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1188,6 +1202,7 @@ def main(
     compute_metric: bool,
     metric: str,
     metric_path: Optional[str],
+    debug: bool,
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)

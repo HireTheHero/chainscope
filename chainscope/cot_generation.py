@@ -24,6 +24,7 @@ def _compute_and_export_metrics(
     metric_path: str,
     model_id: str,
     export_json: bool = False,
+    debug: bool = False,
 ):
     """Compute and export metrics from hidden states of a single response.
 
@@ -34,6 +35,7 @@ def _compute_and_export_metrics(
         metric_path: Path to export metric visualizations
         model_id: Model ID for title generation
         export_json: Whether to export JSON alongside PNG for multi-token responses
+        debug: Enable debug mode with verbose parallel execution logging
     """
     import json
 
@@ -107,12 +109,14 @@ def _compute_and_export_metrics(
                 metric=metric_type,
                 method='knn',
                 split_index=split_index,
+                debug=debug,
             )
         else:
             metric_matrix = compute_metric_matrix(
                 last_layer_states,
                 metric=metric_type,
                 method='knn',
+                debug=debug,
             )
 
         # Save visualization (PNG)
@@ -323,6 +327,7 @@ def get_local_responses_hf(
     compute_metric: bool = False,
     metric_type: str = "mi",
     metric_path: str | None = None,
+    debug: bool = False,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation.
     
@@ -480,6 +485,7 @@ def get_local_responses_hf(
                 metric_type=metric_type,
                 metric_path=metric_path,
                 model_id=model_id,
+                debug=debug,
             )
             # Free memory immediately to prevent OOM
             del outputs
