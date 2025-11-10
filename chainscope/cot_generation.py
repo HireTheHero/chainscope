@@ -82,7 +82,9 @@ def _compute_and_export_metrics(
 
             # Compute metric using the same framework but with single state
             if metric_type == "phi":
-                split_index = t.numel(single_state) // 2
+                # Split at token level: split_index should be seq_len // 2
+                _, seq_len, _ = single_state.shape
+                split_index = seq_len // 2
                 metric_value = compute_metric_matrix(
                     [single_state],
                     metric=metric_type,
@@ -120,8 +122,9 @@ def _compute_and_export_metrics(
 
         # Compute metric matrix for multi-token responses
         if metric_type == "phi":
-            # For phi, we need to specify split_index
-            split_index = t.numel(last_layer_states[0]) // 2
+            # For phi, we need to specify split_index at token level
+            _, seq_len, _ = last_layer_states[0].shape
+            split_index = seq_len // 2
             metric_matrix = compute_metric_matrix(
                 last_layer_states,
                 metric=metric_type,
