@@ -28,6 +28,7 @@ def _compute_and_export_metrics(
     reduce_dim: bool = False,
     num_dim: int = 1000,
     reduce_method: str = "pca",
+    reduce_per_step: bool = False,
 ):
     """Compute and export metrics from hidden states of a single response.
 
@@ -42,6 +43,7 @@ def _compute_and_export_metrics(
         reduce_dim: Whether to apply dimensionality reduction
         num_dim: Target dimensions for reduction
         reduce_method: Method for reduction ('pca')
+        reduce_per_step: Apply PCA separately per generation step (for phi)
     """
     import json
 
@@ -90,6 +92,7 @@ def _compute_and_export_metrics(
                     reduce_dim=reduce_dim,
                     num_dim=num_dim,
                     reduce_method=reduce_method,
+                    reduce_per_step=reduce_per_step,
                 )[0, 0]  # Extract scalar from 1x1 matrix
             else:
                 metric_value = compute_metric_matrix(
@@ -100,6 +103,7 @@ def _compute_and_export_metrics(
                     reduce_dim=reduce_dim,
                     num_dim=num_dim,
                     reduce_method=reduce_method,
+                    reduce_per_step=reduce_per_step,
                 )[0, 0]  # Extract scalar from 1x1 matrix
 
             # Export as JSON
@@ -127,6 +131,7 @@ def _compute_and_export_metrics(
                 reduce_dim=reduce_dim,
                 num_dim=num_dim,
                 reduce_method=reduce_method,
+                reduce_per_step=reduce_per_step,
             )
         else:
             metric_matrix = compute_metric_matrix(
@@ -137,6 +142,7 @@ def _compute_and_export_metrics(
                 reduce_dim=reduce_dim,
                 num_dim=num_dim,
                 reduce_method=reduce_method,
+                reduce_per_step=reduce_per_step,
             )
 
         # Save visualization (PNG)
