@@ -77,6 +77,7 @@ from chainscope.api_utils.deepseek_utils import (
 )
 from chainscope.api_utils.open_router_utils import ORBatchProcessor, ORRateLimiter
 from chainscope.api_utils import anthropic_utils  # import ANBatchProcessor
+from chainscope.cot_generation import _compute_and_export_metrics
 from chainscope.typing import (
     CotResponses,
     DefaultSamplingParams,
@@ -90,137 +91,8 @@ from chainscope.typing import (
 from chainscope.utils import MODELS_MAP, is_instruct_model, make_chat_prompt
 
 
-def _compute_and_export_metrics(
-    hidden_states: tuple,
-    response_idx: int,
-    metric_type: str,
-    metric_path: str,
-    model_id: str,
-    export_json: bool = False,
-    debug: bool = False,
-):
-    """Compute and export metrics from hidden states of a single response.
-
-    Args:
-        hidden_states: Hidden states from model generation for a single response
-        response_idx: Index of the response for file naming
-        metric_type: Type of metric to compute ('mi' or 'phi')
-        metric_path: Path to export metric visualizations
-        model_id: Model ID for title generation
-        export_json: Whether to export JSON alongside PNG for multi-token responses
-        debug: Enable debug mode with verbose parallel execution logging
-    """
-    import json
-
-    try:
-        from src import compute_metric_matrix
-        from eval import save_matrix_viz
-    except ImportError:
-        logging.error("LINE package not installed. Install with: uv pip install -e ../LINE")
-        return
-
-    # Create output directory if it doesn't exist
-    os.makedirs(metric_path, exist_ok=True)
-
-    try:
-        # Extract last layer states from each generation step
-        # hidden_states is a tuple of (num_generated_tokens,) where each element
-        # is a tuple of (num_layers,) tensors with shape (batch_size, seq_len, hidden_dim)
-        last_layer_states = [step[-1] for step in hidden_states]
-
-        # Convert to float32 if needed (scikit-learn doesn't support bfloat16)
-        last_layer_states = [state.float() if state.dtype == torch.bfloat16 else state
-                             for state in last_layer_states]
-
-        logging.info(f"Response {response_idx}: {len(last_layer_states)} generation steps, "
-                    f"each with shape {last_layer_states[0].shape}")
-
-        # Handle single-token responses (export single-valued metric as JSON)
-        if len(last_layer_states) < 2:
-            logging.info(f"Response {response_idx}: Single-token response detected. "
-                        f"Computing single-valued {metric_type.upper()} metric.")
-
-            # Compute single-valued metric from the single hidden state
-            # For MI: compute self-information (entropy of the state)
-            # For Phi: use the same approach
-            single_state = last_layer_states[0]
-
-            # Compute metric using the same framework but with single state
-            if metric_type == "phi":
-                split_index = torch.numel(single_state) // 2
-                metric_value = compute_metric_matrix(
-                    [single_state],
-                    metric=metric_type,
-                    method='knn',
-                    split_index=split_index,
-                    debug=debug,
-                )[0, 0]  # Extract scalar from 1x1 matrix
-            else:
-                metric_value = compute_metric_matrix(
-                    [single_state],
-                    metric=metric_type,
-                    method='knn',
-                    debug=debug,
-                )[0, 0]  # Extract scalar from 1x1 matrix
-
-            # Export as JSON
-            metric_data = {
-                "metric_type": metric_type,
-                "metric_value": float(metric_value),
-            }
-
-            output_file = os.path.join(metric_path, f'response_{response_idx}_{metric_type}_single.json')
-            with open(output_file, 'w') as f:
-                json.dump(metric_data, f, indent=2)
-            logging.info(f"Saved {metric_type.upper()} single-valued metric to {output_file}")
-            return
-
-        # Compute metric matrix for multi-token responses
-        if metric_type == "phi":
-            # For phi, we need to specify split_index
-            split_index = torch.numel(last_layer_states[0]) // 2
-            metric_matrix = compute_metric_matrix(
-                last_layer_states,
-                metric=metric_type,
-                method='knn',
-                split_index=split_index,
-                debug=debug,
-            )
-        else:
-            metric_matrix = compute_metric_matrix(
-                last_layer_states,
-                metric=metric_type,
-                method='knn',
-                debug=debug,
-            )
-
-        # Save visualization (PNG)
-        model_name = model_id.split("/")[-1]
-        output_file = os.path.join(metric_path, f'response_{response_idx}_{metric_type}.png')
-        save_matrix_viz(
-            metric_matrix,
-            file_path=output_file,
-            title=f'{model_name} - {metric_type.upper()} Matrix (Response {response_idx})',
-            metric_type=metric_type,
-            figsize=(10, 8),
-            dpi=300,
-            show_annotations=False,
-        )
-        logging.info(f"Saved {metric_type.upper()} visualization to {output_file}")
-
-        # Optionally export JSON alongside PNG for multi-token responses
-        if export_json:
-            metric_data = {
-                "metric_type": metric_type,
-                "metric_matrix": metric_matrix.tolist(),
-            }
-            json_file = os.path.join(metric_path, f'response_{response_idx}_{metric_type}.json')
-            with open(json_file, 'w') as f:
-                json.dump(metric_data, f, indent=2)
-            logging.info(f"Saved {metric_type.upper()} matrix data to {json_file}")
-
-    except Exception as e:
-        logging.error(f"Error computing metrics for response {response_idx}: {e}")
+# NOTE: _compute_and_export_metrics is now imported from chainscope.cot_generation
+# to avoid code duplication. Previously defined here from lines 93-224.
 
 
 class DatasetType(StrEnum):
@@ -337,6 +209,9 @@ def get_putnam_responses_hf(
     metric_type: str = "mi",
     metric_path: Optional[str] = None,
     debug: bool = False,
+    reduce_dim: bool = False,
+    num_dim: int = 1000,
+    reduce_method: str = "pca",
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation for Putnam problems.
     
@@ -351,6 +226,9 @@ def get_putnam_responses_hf(
         compute_metric: Whether to compute and export metrics
         metric_type: Type of metric to compute ('mi' or 'phi')
         metric_path: Path to export metric visualizations
+        reduce_dim: Apply dimensionality reduction
+        num_dim: Target dimensions
+        reduce_method: Reduction method
     """
     import torch
     
@@ -444,6 +322,9 @@ def get_putnam_responses_hf(
                 metric_path=metric_path,
                 model_id=model_id,
                 debug=debug,
+                reduce_dim=reduce_dim,
+                num_dim=num_dim,
+                reduce_method=reduce_method,
             )
             # Free memory immediately to prevent OOM
             del outputs
@@ -856,6 +737,9 @@ async def generate_rollouts_local(
     compute_metric: bool = False,
     metric_type: str = "mi",
     metric_path: Optional[str] = None,
+    reduce_dim: bool = False,
+    num_dim: int = 1000,
+    reduce_method: str = "pca",
 ) -> CotResponses:
     """Generate rollouts using local models (VLLM or TTL).
     
@@ -873,7 +757,10 @@ async def generate_rollouts_local(
         fsp_size: Number of few-shot examples
         fsp_seed: Seed for few-shot example selection
         local_gen_seed: Seed for local generation
-        
+        reduce_dim: Apply dimensionality reduction
+        num_dim: Target dimensions
+        reduce_method: Reduction method
+
     Returns:
         CotResponses object
     """
@@ -924,6 +811,9 @@ async def generate_rollouts_local(
             metric_type=metric_type,
             metric_path=metric_path,
             debug=debug,
+            reduce_dim=reduce_dim,
+            num_dim=num_dim,
+            reduce_method=reduce_method,
         )
     else:  # ttl
         results = get_putnam_responses_tl(
@@ -1181,6 +1071,23 @@ async def generate_rollouts(
     is_flag=True,
     help="Enable debug mode with verbose parallel execution logging",
 )
+@click.option(
+    "--reduce-dim",
+    is_flag=True,
+    help="Enable dimensionality reduction before metric computation",
+)
+@click.option(
+    "--num-dim",
+    type=int,
+    default=1000,
+    help="Target number of dimensions after reduction (must be < hidden_dim)",
+)
+@click.option(
+    "--reduce-method",
+    type=click.Choice(["pca"]),
+    default="pca",
+    help="Dimensionality reduction method",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1203,6 +1110,9 @@ def main(
     metric: str,
     metric_path: Optional[str],
     debug: bool,
+    reduce_dim: bool,
+    num_dim: int,
+    reduce_method: str,
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -1243,6 +1153,9 @@ def main(
                 compute_metric=compute_metric,
                 metric_type=metric,
                 metric_path=metric_path,
+                reduce_dim=reduce_dim,
+                num_dim=num_dim,
+                reduce_method=reduce_method,
             )
         )
     else:

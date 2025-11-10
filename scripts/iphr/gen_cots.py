@@ -315,6 +315,23 @@ def submit(
     is_flag=True,
     help="Enable debug mode with verbose parallel execution logging",
 )
+@click.option(
+    "--reduce-dim",
+    is_flag=True,
+    help="Enable dimensionality reduction before metric computation",
+)
+@click.option(
+    "--num-dim",
+    type=int,
+    default=1000,
+    help="Target number of dimensions after reduction (must be < hidden_dim)",
+)
+@click.option(
+    "--reduce-method",
+    type=click.Choice(["pca"]),
+    default="pca",
+    help="Dimensionality reduction method",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -335,6 +352,9 @@ def local(
     metric: str,
     metric_path: str | None,
     debug: bool,
+    reduce_dim: bool,
+    num_dim: int,
+    reduce_method: str,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -488,6 +508,9 @@ def local(
             metric_type=metric,
             metric_path=metric_path,
             debug=debug,
+            reduce_dim=reduce_dim,
+            num_dim=num_dim,
+            reduce_method=reduce_method,
         )
     else:  # ttl
         results = get_local_responses_tl(

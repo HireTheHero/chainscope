@@ -25,6 +25,9 @@ def _compute_and_export_metrics(
     model_id: str,
     export_json: bool = False,
     debug: bool = False,
+    reduce_dim: bool = False,
+    num_dim: int = 1000,
+    reduce_method: str = "pca",
 ):
     """Compute and export metrics from hidden states of a single response.
 
@@ -36,6 +39,9 @@ def _compute_and_export_metrics(
         model_id: Model ID for title generation
         export_json: Whether to export JSON alongside PNG for multi-token responses
         debug: Enable debug mode with verbose parallel execution logging
+        reduce_dim: Whether to apply dimensionality reduction
+        num_dim: Target dimensions for reduction
+        reduce_method: Method for reduction ('pca')
     """
     import json
 
@@ -80,12 +86,20 @@ def _compute_and_export_metrics(
                     metric=metric_type,
                     method='knn',
                     split_index=split_index,
+                    debug=debug,
+                    reduce_dim=reduce_dim,
+                    num_dim=num_dim,
+                    reduce_method=reduce_method,
                 )[0, 0]  # Extract scalar from 1x1 matrix
             else:
                 metric_value = compute_metric_matrix(
                     [single_state],
                     metric=metric_type,
                     method='knn',
+                    debug=debug,
+                    reduce_dim=reduce_dim,
+                    num_dim=num_dim,
+                    reduce_method=reduce_method,
                 )[0, 0]  # Extract scalar from 1x1 matrix
 
             # Export as JSON
@@ -110,6 +124,9 @@ def _compute_and_export_metrics(
                 method='knn',
                 split_index=split_index,
                 debug=debug,
+                reduce_dim=reduce_dim,
+                num_dim=num_dim,
+                reduce_method=reduce_method,
             )
         else:
             metric_matrix = compute_metric_matrix(
@@ -117,6 +134,9 @@ def _compute_and_export_metrics(
                 metric=metric_type,
                 method='knn',
                 debug=debug,
+                reduce_dim=reduce_dim,
+                num_dim=num_dim,
+                reduce_method=reduce_method,
             )
 
         # Save visualization (PNG)
@@ -328,6 +348,9 @@ def get_local_responses_hf(
     metric_type: str = "mi",
     metric_path: str | None = None,
     debug: bool = False,
+    reduce_dim: bool = False,
+    num_dim: int = 1000,
+    reduce_method: str = "pca",
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation.
     
@@ -347,7 +370,10 @@ def get_local_responses_hf(
         compute_metric: Whether to compute and export metrics
         metric_type: Type of metric to compute ('mi' or 'phi')
         metric_path: Path to export metric visualizations
-        
+        reduce_dim: Apply dimensionality reduction
+        num_dim: Target dimensions
+        reduce_method: Reduction method
+
     Returns:
         List of (question ID, generated response, fsp_prompt or None) tuples
     """
@@ -486,6 +512,9 @@ def get_local_responses_hf(
                 metric_path=metric_path,
                 model_id=model_id,
                 debug=debug,
+                reduce_dim=reduce_dim,
+                num_dim=num_dim,
+                reduce_method=reduce_method,
             )
             # Free memory immediately to prevent OOM
             del outputs
