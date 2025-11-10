@@ -351,6 +351,7 @@ def get_local_responses_hf(
     reduce_dim: bool = False,
     num_dim: int = 1000,
     reduce_method: str = "pca",
+    reduce_per_step: bool = False,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation.
     
@@ -373,6 +374,7 @@ def get_local_responses_hf(
         reduce_dim: Apply dimensionality reduction
         num_dim: Target dimensions
         reduce_method: Reduction method
+        reduce_per_step: Apply PCA separately per generation step (for phi)
 
     Returns:
         List of (question ID, generated response, fsp_prompt or None) tuples
@@ -515,6 +517,7 @@ def get_local_responses_hf(
                 reduce_dim=reduce_dim,
                 num_dim=num_dim,
                 reduce_method=reduce_method,
+                reduce_per_step=reduce_per_step,
             )
             # Free memory immediately to prevent OOM
             del outputs

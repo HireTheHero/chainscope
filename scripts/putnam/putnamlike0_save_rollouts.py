@@ -212,6 +212,7 @@ def get_putnam_responses_hf(
     reduce_dim: bool = False,
     num_dim: int = 1000,
     reduce_method: str = "pca",
+    reduce_per_step: bool = False,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation for Putnam problems.
     
@@ -229,6 +230,7 @@ def get_putnam_responses_hf(
         reduce_dim: Apply dimensionality reduction
         num_dim: Target dimensions
         reduce_method: Reduction method
+        reduce_per_step: Apply PCA separately per generation step (for phi)
     """
     import torch
     
@@ -325,6 +327,7 @@ def get_putnam_responses_hf(
                 reduce_dim=reduce_dim,
                 num_dim=num_dim,
                 reduce_method=reduce_method,
+                reduce_per_step=reduce_per_step,
             )
             # Free memory immediately to prevent OOM
             del outputs
@@ -740,6 +743,7 @@ async def generate_rollouts_local(
     reduce_dim: bool = False,
     num_dim: int = 1000,
     reduce_method: str = "pca",
+    reduce_per_step: bool = False,
 ) -> CotResponses:
     """Generate rollouts using local models (VLLM or TTL).
     
@@ -760,6 +764,7 @@ async def generate_rollouts_local(
         reduce_dim: Apply dimensionality reduction
         num_dim: Target dimensions
         reduce_method: Reduction method
+        reduce_per_step: Apply PCA per generation step (for phi)
 
     Returns:
         CotResponses object
@@ -814,6 +819,7 @@ async def generate_rollouts_local(
             reduce_dim=reduce_dim,
             num_dim=num_dim,
             reduce_method=reduce_method,
+            reduce_per_step=reduce_per_step,
         )
     else:  # ttl
         results = get_putnam_responses_tl(
@@ -1088,6 +1094,11 @@ async def generate_rollouts(
     default="pca",
     help="Dimensionality reduction method",
 )
+@click.option(
+    "--reduce-per-step",
+    is_flag=True,
+    help="Apply PCA separately per generation step (recommended for phi metric)",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1113,6 +1124,7 @@ def main(
     reduce_dim: bool,
     num_dim: int,
     reduce_method: str,
+    reduce_per_step: bool,
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -1156,6 +1168,7 @@ def main(
                 reduce_dim=reduce_dim,
                 num_dim=num_dim,
                 reduce_method=reduce_method,
+                reduce_per_step=reduce_per_step,
             )
         )
     else:

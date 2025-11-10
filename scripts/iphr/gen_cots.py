@@ -332,6 +332,11 @@ def submit(
     default="pca",
     help="Dimensionality reduction method",
 )
+@click.option(
+    "--reduce-per-step",
+    is_flag=True,
+    help="Apply PCA separately per generation step (recommended for phi metric)",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -355,6 +360,7 @@ def local(
     reduce_dim: bool,
     num_dim: int,
     reduce_method: str,
+    reduce_per_step: bool,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -511,6 +517,7 @@ def local(
             reduce_dim=reduce_dim,
             num_dim=num_dim,
             reduce_method=reduce_method,
+            reduce_per_step=reduce_per_step,
         )
     else:  # ttl
         results = get_local_responses_tl(
