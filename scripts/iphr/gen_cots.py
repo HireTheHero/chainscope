@@ -323,7 +323,7 @@ def submit(
 @click.option(
     "--num-dim",
     type=int,
-    default=1000,
+    default=100,
     help="Target number of dimensions after reduction (must be < hidden_dim)",
 )
 @click.option(

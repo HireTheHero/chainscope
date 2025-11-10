@@ -26,7 +26,7 @@ def _compute_and_export_metrics(
     export_json: bool = False,
     debug: bool = False,
     reduce_dim: bool = False,
-    num_dim: int = 1000,
+    num_dim: int = 100,
     reduce_method: str = "pca",
     reduce_per_step: bool = False,
 ):
@@ -355,7 +355,7 @@ def get_local_responses_hf(
     metric_path: str | None = None,
     debug: bool = False,
     reduce_dim: bool = False,
-    num_dim: int = 1000,
+    num_dim: int = 100,
     reduce_method: str = "pca",
     reduce_per_step: bool = False,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:

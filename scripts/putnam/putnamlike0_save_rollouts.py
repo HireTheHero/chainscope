@@ -210,7 +210,7 @@ def get_putnam_responses_hf(
     metric_path: Optional[str] = None,
     debug: bool = False,
     reduce_dim: bool = False,
-    num_dim: int = 1000,
+    num_dim: int = 100,
     reduce_method: str = "pca",
     reduce_per_step: bool = False,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
@@ -741,7 +741,7 @@ async def generate_rollouts_local(
     metric_type: str = "mi",
     metric_path: Optional[str] = None,
     reduce_dim: bool = False,
-    num_dim: int = 1000,
+    num_dim: int = 100,
     reduce_method: str = "pca",
     reduce_per_step: bool = False,
 ) -> CotResponses:
@@ -1085,7 +1085,7 @@ async def generate_rollouts(
 @click.option(
     "--num-dim",
     type=int,
-    default=1000,
+    default=100,
     help="Target number of dimensions after reduction (must be < hidden_dim)",
 )
 @click.option(
