@@ -75,14 +75,6 @@ def _compute_and_export_metrics(
         logging.info(f"Response {response_idx}: {len(last_layer_states)} generation steps, "
                     f"each with shape {last_layer_states[0].shape}")
 
-        # Extract only the last token from each step to normalize format
-        # This converts each tensor from (batch, seq_len, hidden) to (batch, 1, hidden)
-        # where the extracted token represents the newly generated token at that step
-        last_layer_states = [state[:, -1:, :] for state in last_layer_states]
-
-        logging.info(f"Response {response_idx}: After extracting last token from each step, "
-                    f"shape: {last_layer_states[0].shape}")
-
         # Handle single-token responses (export single-valued metric as JSON)
         if len(last_layer_states) < 2:
             logging.info(f"Response {response_idx}: Single-token response detected. "
