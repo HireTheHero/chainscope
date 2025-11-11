@@ -65,6 +65,7 @@ def _compute_and_export_metrics(
         # Extract last layer states from each generation step
         # hidden_states is a tuple of (num_generated_tokens,) where each element
         # is a tuple of (num_layers,) tensors with shape (batch_size, seq_len, hidden_dim)
+        # Note: seq_len grows with each generation step (contains full sequence up to that point)
         last_layer_states = [step[-1] for step in hidden_states]
 
         # Convert to float32 if needed (scikit-learn doesn't support bfloat16)
@@ -73,6 +74,14 @@ def _compute_and_export_metrics(
 
         logging.info(f"Response {response_idx}: {len(last_layer_states)} generation steps, "
                     f"each with shape {last_layer_states[0].shape}")
+
+        # Extract only the last token from each step to normalize format
+        # This converts each tensor from (batch, seq_len, hidden) to (batch, 1, hidden)
+        # where the extracted token represents the newly generated token at that step
+        last_layer_states = [state[:, -1:, :] for state in last_layer_states]
+
+        logging.info(f"Response {response_idx}: After extracting last token from each step, "
+                    f"shape: {last_layer_states[0].shape}")
 
         # Handle single-token responses (export single-valued metric as JSON)
         if len(last_layer_states) < 2:
