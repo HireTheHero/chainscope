@@ -31,6 +31,7 @@ def _compute_and_export_metrics(
     reduce_per_step: bool = False,
     select_tokens: bool = False,
     token_index_list: list[int] | None = None,
+    n_jobs: int = -1,
 ):
     """Compute and export metrics from hidden states of a single response.
 
@@ -48,6 +49,7 @@ def _compute_and_export_metrics(
         reduce_per_step: Apply PCA separately per generation step (for phi)
         select_tokens: Whether to select specific token positions
         token_index_list: List of token indices to select if select_tokens is True
+        n_jobs: Number of parallel jobs for metric computation (-1 for all cores)
     """
     import json
 
@@ -102,6 +104,7 @@ def _compute_and_export_metrics(
                     reduce_per_step=reduce_per_step,
                     select_tokens=select_tokens,
                     token_index_list=token_index_list,
+                    n_jobs=n_jobs,
                 )[0, 0]  # Extract scalar from 1x1 matrix
             else:
                 metric_value = compute_metric_matrix(
@@ -115,6 +118,7 @@ def _compute_and_export_metrics(
                     reduce_per_step=reduce_per_step,
                     select_tokens=select_tokens,
                     token_index_list=token_index_list,
+                    n_jobs=n_jobs,
                 )[0, 0]  # Extract scalar from 1x1 matrix
 
             # Export as JSON
@@ -146,6 +150,7 @@ def _compute_and_export_metrics(
                 reduce_per_step=reduce_per_step,
                 select_tokens=select_tokens,
                 token_index_list=token_index_list,
+                n_jobs=n_jobs,
             )
         else:
             metric_matrix = compute_metric_matrix(
@@ -159,6 +164,7 @@ def _compute_and_export_metrics(
                 reduce_per_step=reduce_per_step,
                 select_tokens=select_tokens,
                 token_index_list=token_index_list,
+                n_jobs=n_jobs,
             )
 
         # Save visualization (PNG)
@@ -376,6 +382,7 @@ def get_local_responses_hf(
     reduce_per_step: bool = False,
     select_tokens: bool = False,
     token_index_list: list[int] | None = None,
+    n_jobs: int = -1,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation.
 
@@ -546,6 +553,7 @@ def get_local_responses_hf(
                 reduce_per_step=reduce_per_step,
                 select_tokens=select_tokens,
                 token_index_list=token_index_list,
+                n_jobs=n_jobs,
             )
             # Free memory immediately to prevent OOM
             del outputs

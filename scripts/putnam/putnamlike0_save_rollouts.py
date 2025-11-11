@@ -1120,6 +1120,12 @@ async def generate_rollouts(
     default=None,
     help="Comma-separated list of token indices to select (e.g., '0,5,10,19')",
 )
+@click.option(
+    "--n-jobs",
+    type=int,
+    default=-1,
+    help="Number of parallel jobs for metric computation (-1 for all cores, 4 recommended to prevent OOM)",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1148,6 +1154,7 @@ def main(
     reduce_per_step: bool,
     select_tokens: bool,
     token_index_list: str | None,
+    n_jobs: int,
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -1204,6 +1211,7 @@ def main(
                 reduce_per_step=reduce_per_step,
                 select_tokens=select_tokens,
                 token_index_list=parsed_token_indices,
+                n_jobs=n_jobs,
             )
         )
     else:
