@@ -29,6 +29,8 @@ def _compute_and_export_metrics(
     num_dim: int = 100,
     reduce_method: str = "pca",
     reduce_per_step: bool = False,
+    select_tokens: bool = False,
+    token_index_list: list[int] | None = None,
 ):
     """Compute and export metrics from hidden states of a single response.
 
@@ -44,6 +46,8 @@ def _compute_and_export_metrics(
         num_dim: Target dimensions for reduction
         reduce_method: Method for reduction ('pca')
         reduce_per_step: Apply PCA separately per generation step (for phi)
+        select_tokens: Whether to select specific token positions
+        token_index_list: List of token indices to select if select_tokens is True
     """
     import json
 
@@ -95,6 +99,8 @@ def _compute_and_export_metrics(
                     num_dim=num_dim,
                     reduce_method=reduce_method,
                     reduce_per_step=reduce_per_step,
+                    select_tokens=select_tokens,
+                    token_index_list=token_index_list,
                 )[0, 0]  # Extract scalar from 1x1 matrix
             else:
                 metric_value = compute_metric_matrix(
@@ -106,6 +112,8 @@ def _compute_and_export_metrics(
                     num_dim=num_dim,
                     reduce_method=reduce_method,
                     reduce_per_step=reduce_per_step,
+                    select_tokens=select_tokens,
+                    token_index_list=token_index_list,
                 )[0, 0]  # Extract scalar from 1x1 matrix
 
             # Export as JSON
@@ -135,6 +143,8 @@ def _compute_and_export_metrics(
                 num_dim=num_dim,
                 reduce_method=reduce_method,
                 reduce_per_step=reduce_per_step,
+                select_tokens=select_tokens,
+                token_index_list=token_index_list,
             )
         else:
             metric_matrix = compute_metric_matrix(
@@ -146,6 +156,8 @@ def _compute_and_export_metrics(
                 num_dim=num_dim,
                 reduce_method=reduce_method,
                 reduce_per_step=reduce_per_step,
+                select_tokens=select_tokens,
+                token_index_list=token_index_list,
             )
 
         # Save visualization (PNG)
@@ -361,11 +373,13 @@ def get_local_responses_hf(
     num_dim: int = 100,
     reduce_method: str = "pca",
     reduce_per_step: bool = False,
+    select_tokens: bool = False,
+    token_index_list: list[int] | None = None,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation.
-    
+
     Uses device_map="auto" for multi-GPU distribution. Works well for large models.
-    
+
     Args:
         prompts: List of (question ID, prompt text) tuples
         model_id: Name of the model to use
@@ -384,6 +398,8 @@ def get_local_responses_hf(
         num_dim: Target dimensions
         reduce_method: Reduction method
         reduce_per_step: Apply PCA separately per generation step (for phi)
+        select_tokens: Whether to select specific token positions
+        token_index_list: List of token indices to select if select_tokens is True
 
     Returns:
         List of (question ID, generated response, fsp_prompt or None) tuples
@@ -527,6 +543,8 @@ def get_local_responses_hf(
                 num_dim=num_dim,
                 reduce_method=reduce_method,
                 reduce_per_step=reduce_per_step,
+                select_tokens=select_tokens,
+                token_index_list=token_index_list,
             )
             # Free memory immediately to prevent OOM
             del outputs

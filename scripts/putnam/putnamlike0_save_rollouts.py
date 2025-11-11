@@ -213,12 +213,14 @@ def get_putnam_responses_hf(
     num_dim: int = 100,
     reduce_method: str = "pca",
     reduce_per_step: bool = False,
+    select_tokens: bool = False,
+    token_index_list: list[int] | None = None,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation for Putnam problems.
-    
+
     This uses HF's native generation with device_map="auto" for multi-GPU support.
     Works well for large models (70B+) on multiple GPUs.
-    
+
     Args:
         prompts: List of (question ID, prompt text) tuples
         model_id: Model ID for generation
@@ -231,6 +233,8 @@ def get_putnam_responses_hf(
         num_dim: Target dimensions
         reduce_method: Reduction method
         reduce_per_step: Apply PCA separately per generation step (for phi)
+        select_tokens: Whether to select specific token positions
+        token_index_list: List of token indices to select if select_tokens is True
     """
     import torch
     
@@ -328,6 +332,8 @@ def get_putnam_responses_hf(
                 num_dim=num_dim,
                 reduce_method=reduce_method,
                 reduce_per_step=reduce_per_step,
+                select_tokens=select_tokens,
+                token_index_list=token_index_list,
             )
             # Free memory immediately to prevent OOM
             del outputs
@@ -744,6 +750,8 @@ async def generate_rollouts_local(
     num_dim: int = 100,
     reduce_method: str = "pca",
     reduce_per_step: bool = False,
+    select_tokens: bool = False,
+    token_index_list: list[int] | None = None,
 ) -> CotResponses:
     """Generate rollouts using local models (VLLM or TTL).
     
@@ -820,6 +828,8 @@ async def generate_rollouts_local(
             num_dim=num_dim,
             reduce_method=reduce_method,
             reduce_per_step=reduce_per_step,
+            select_tokens=select_tokens,
+            token_index_list=token_index_list,
         )
     else:  # ttl
         results = get_putnam_responses_tl(
@@ -1099,6 +1109,17 @@ async def generate_rollouts(
     is_flag=True,
     help="Apply PCA separately per generation step (recommended for phi metric)",
 )
+@click.option(
+    "--select-tokens",
+    is_flag=True,
+    help="Select specific token positions instead of all tokens",
+)
+@click.option(
+    "--token-index-list",
+    type=str,
+    default=None,
+    help="Comma-separated list of token indices to select (e.g., '0,5,10,19')",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1125,6 +1146,8 @@ def main(
     num_dim: int,
     reduce_method: str,
     reduce_per_step: bool,
+    select_tokens: bool,
+    token_index_list: str | None,
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -1143,7 +1166,17 @@ def main(
         if metric_path is None:
             logging.error("--metric-path is required when --compute-metric is set")
             return
-    
+
+    # Parse token index list if provided
+    parsed_token_indices = None
+    if token_index_list is not None:
+        try:
+            parsed_token_indices = [int(x.strip()) for x in token_index_list.split(",")]
+            logging.info(f"Parsed token indices: {parsed_token_indices}")
+        except ValueError as e:
+            logging.error(f"Invalid token index list format: {e}")
+            return
+
     # Generate rollouts
     if api is not None:
         # Use local generation
@@ -1169,6 +1202,8 @@ def main(
                 num_dim=num_dim,
                 reduce_method=reduce_method,
                 reduce_per_step=reduce_per_step,
+                select_tokens=select_tokens,
+                token_index_list=parsed_token_indices,
             )
         )
     else:

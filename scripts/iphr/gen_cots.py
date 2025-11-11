@@ -337,6 +337,17 @@ def submit(
     is_flag=True,
     help="Apply PCA separately per generation step (recommended for phi metric)",
 )
+@click.option(
+    "--select-tokens",
+    is_flag=True,
+    help="Select specific token positions instead of all tokens",
+)
+@click.option(
+    "--token-index-list",
+    type=str,
+    default=None,
+    help="Comma-separated list of token indices to select (e.g., '0,5,10,19')",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -361,6 +372,8 @@ def local(
     num_dim: int,
     reduce_method: str,
     reduce_per_step: bool,
+    select_tokens: bool,
+    token_index_list: str | None,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -484,7 +497,17 @@ def local(
         if metric_path is None:
             logging.error("--metric-path is required when --compute-metric is set")
             return
-    
+
+    # Parse token index list if provided
+    parsed_token_indices = None
+    if token_index_list is not None:
+        try:
+            parsed_token_indices = [int(x.strip()) for x in token_index_list.split(",")]
+            logging.info(f"Parsed token indices: {parsed_token_indices}")
+        except ValueError as e:
+            logging.error(f"Invalid token index list format: {e}")
+            return
+
     # Process using local model
     if api == "vllm":
         results = get_local_responses_vllm(
@@ -518,6 +541,8 @@ def local(
             num_dim=num_dim,
             reduce_method=reduce_method,
             reduce_per_step=reduce_per_step,
+            select_tokens=select_tokens,
+            token_index_list=parsed_token_indices,
         )
     else:  # ttl
         results = get_local_responses_tl(
