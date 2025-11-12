@@ -360,6 +360,11 @@ def submit(
     default=None,
     help="Number of tokens to extract as context window for phi computation (e.g., 5 for 5-token windows)",
 )
+@click.option(
+    "--use-gpu",
+    is_flag=True,
+    help="Use GPU acceleration for phi/MI computation (requires CUDA)",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -388,6 +393,7 @@ def local(
     token_index_list: str | None,
     n_jobs: int,
     context_size: int | None,
+    use_gpu: bool,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -559,6 +565,7 @@ def local(
             token_index_list=parsed_token_indices,
             n_jobs=n_jobs,
             context_size=context_size,
+            use_gpu=use_gpu,
         )
     else:  # ttl
         results = get_local_responses_tl(

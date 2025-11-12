@@ -1132,6 +1132,11 @@ async def generate_rollouts(
     default=None,
     help="Number of tokens to extract as context window for phi computation (e.g., 5 for 5-token windows)",
 )
+@click.option(
+    "--use-gpu",
+    is_flag=True,
+    help="Use GPU acceleration for phi/MI computation (requires CUDA)",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1162,6 +1167,7 @@ def main(
     token_index_list: str | None,
     n_jobs: int,
     context_size: int | None,
+    use_gpu: bool,
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -1220,6 +1226,7 @@ def main(
                 token_index_list=parsed_token_indices,
                 n_jobs=n_jobs,
                 context_size=context_size,
+                use_gpu=use_gpu,
             )
         )
     else:
