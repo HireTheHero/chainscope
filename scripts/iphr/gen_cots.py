@@ -354,6 +354,12 @@ def submit(
     default=-1,
     help="Number of parallel jobs for metric computation (-1 for all cores, 4 recommended to prevent OOM)",
 )
+@click.option(
+    "--context-size",
+    type=int,
+    default=None,
+    help="Number of tokens to extract as context window for phi computation (e.g., 5 for 5-token windows)",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -381,6 +387,7 @@ def local(
     select_tokens: bool,
     token_index_list: str | None,
     n_jobs: int,
+    context_size: int | None,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -551,6 +558,7 @@ def local(
             select_tokens=select_tokens,
             token_index_list=parsed_token_indices,
             n_jobs=n_jobs,
+            context_size=context_size,
         )
     else:  # ttl
         results = get_local_responses_tl(

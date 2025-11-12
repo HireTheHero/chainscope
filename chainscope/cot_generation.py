@@ -32,6 +32,7 @@ def _compute_and_export_metrics(
     select_tokens: bool = False,
     token_index_list: list[int] | None = None,
     n_jobs: int = -1,
+    context_size: int | None = None,
 ):
     """Compute and export metrics from hidden states of a single response.
 
@@ -50,6 +51,7 @@ def _compute_and_export_metrics(
         select_tokens: Whether to select specific token positions
         token_index_list: List of token indices to select if select_tokens is True
         n_jobs: Number of parallel jobs for metric computation (-1 for all cores)
+        context_size: Number of tokens to extract as context window (for HF generation)
     """
     import json
 
@@ -105,6 +107,7 @@ def _compute_and_export_metrics(
                     select_tokens=select_tokens,
                     token_index_list=token_index_list,
                     n_jobs=n_jobs,
+                    context_size=context_size,
                 )[0, 0]  # Extract scalar from 1x1 matrix
             else:
                 metric_value = compute_metric_matrix(
@@ -119,6 +122,7 @@ def _compute_and_export_metrics(
                     select_tokens=select_tokens,
                     token_index_list=token_index_list,
                     n_jobs=n_jobs,
+                    context_size=context_size,
                 )[0, 0]  # Extract scalar from 1x1 matrix
 
             # Export as JSON
@@ -151,6 +155,7 @@ def _compute_and_export_metrics(
                 select_tokens=select_tokens,
                 token_index_list=token_index_list,
                 n_jobs=n_jobs,
+                context_size=context_size,
             )
         else:
             metric_matrix = compute_metric_matrix(
@@ -165,6 +170,7 @@ def _compute_and_export_metrics(
                 select_tokens=select_tokens,
                 token_index_list=token_index_list,
                 n_jobs=n_jobs,
+                context_size=context_size,
             )
 
         # Save visualization (PNG)
@@ -383,6 +389,7 @@ def get_local_responses_hf(
     select_tokens: bool = False,
     token_index_list: list[int] | None = None,
     n_jobs: int = -1,
+    context_size: int | None = None,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation.
 
@@ -554,6 +561,7 @@ def get_local_responses_hf(
                 select_tokens=select_tokens,
                 token_index_list=token_index_list,
                 n_jobs=n_jobs,
+                context_size=context_size,
             )
             # Free memory immediately to prevent OOM
             del outputs
