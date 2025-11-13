@@ -365,6 +365,12 @@ def submit(
     is_flag=True,
     help="Use GPU acceleration for phi/MI computation (requires CUDA)",
 )
+@click.option(
+    "--metric-batch",
+    type=int,
+    default=None,
+    help="Number of states to process at once for GPU metric computation (None = auto-calculate based on GPU memory). Only used with --use-gpu.",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -394,6 +400,7 @@ def local(
     n_jobs: int,
     context_size: int | None,
     use_gpu: bool,
+    metric_batch: int,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -566,6 +573,7 @@ def local(
             n_jobs=n_jobs,
             context_size=context_size,
             use_gpu=use_gpu,
+            metric_batch=metric_batch,
         )
     else:  # ttl
         results = get_local_responses_tl(

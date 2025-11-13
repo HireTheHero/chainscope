@@ -34,6 +34,7 @@ def _compute_and_export_metrics(
     n_jobs: int = -1,
     context_size: int | None = None,
     use_gpu: bool = False,
+    metric_batch: int = None,
 ):
     """Compute and export metrics from hidden states of a single response.
 
@@ -54,6 +55,7 @@ def _compute_and_export_metrics(
         n_jobs: Number of parallel jobs for metric computation (-1 for all cores, ignored if use_gpu=True)
         context_size: Number of tokens to extract as context window (for HF generation)
         use_gpu: Use GPU acceleration for metric computation (requires CUDA)
+        metric_batch: Number of states to process at once for GPU (None = auto, only used with use_gpu=True)
     """
     import json
 
@@ -111,6 +113,7 @@ def _compute_and_export_metrics(
                     n_jobs=n_jobs,
                     context_size=context_size,
                     use_gpu=use_gpu,
+                    metric_batch=metric_batch,
                 )[0, 0]  # Extract scalar from 1x1 matrix
             else:
                 metric_value = compute_metric_matrix(
@@ -127,6 +130,7 @@ def _compute_and_export_metrics(
                     n_jobs=n_jobs,
                     context_size=context_size,
                     use_gpu=use_gpu,
+                    metric_batch=metric_batch,
                 )[0, 0]  # Extract scalar from 1x1 matrix
 
             # Export as JSON
@@ -160,7 +164,8 @@ def _compute_and_export_metrics(
                 token_index_list=token_index_list,
                 n_jobs=n_jobs,
                 context_size=context_size,
-                    use_gpu=use_gpu,
+                use_gpu=use_gpu,
+                metric_batch=metric_batch,
             )
         else:
             metric_matrix = compute_metric_matrix(
@@ -176,7 +181,8 @@ def _compute_and_export_metrics(
                 token_index_list=token_index_list,
                 n_jobs=n_jobs,
                 context_size=context_size,
-                    use_gpu=use_gpu,
+                use_gpu=use_gpu,
+                metric_batch=metric_batch,
             )
 
         # Save visualization (PNG)
@@ -397,6 +403,7 @@ def get_local_responses_hf(
     n_jobs: int = -1,
     context_size: int | None = None,
     use_gpu: bool = False,
+    metric_batch: int = None,
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation.
 
@@ -569,7 +576,8 @@ def get_local_responses_hf(
                 token_index_list=token_index_list,
                 n_jobs=n_jobs,
                 context_size=context_size,
-                    use_gpu=use_gpu,
+                use_gpu=use_gpu,
+                metric_batch=metric_batch,
             )
             # Free memory immediately to prevent OOM
             del outputs
