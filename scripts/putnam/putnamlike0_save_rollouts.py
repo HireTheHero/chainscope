@@ -87,6 +87,8 @@ from chainscope.typing import (
     MathResponse,
     QuestionResponseId,
     SamplingParams,
+    SplitCotResponses,
+    StepFaithfulness,
 )
 from chainscope.utils import MODELS_MAP, is_instruct_model, make_chat_prompt
 
@@ -596,6 +598,165 @@ def convert_local_results_to_putnam(
         instr_id="instr-v0",
         ds_params=dataset.params,
         sampling_params=DefaultSamplingParams(),
+    )
+
+
+def load_and_filter_faithfulness_responses(
+    input_path: Path,
+    faithfulness_filter: str,
+    evaluation_mode_str: str,
+) -> CotResponses:
+    """Load pre-evaluated faithfulness responses and optionally filter.
+
+    ⚠️  WARNING: POST-HOC ANALYSIS ONLY - BACKWARD PIPELINE FLOW ⚠️
+
+    This function loads responses that have ALREADY been evaluated by putnamlike3
+    for faithfulness. This goes BACKWARD in the normal pipeline:
+        Normal: putnamlike0 (generate) → putnamlike3 (evaluate) → analyze
+        This:   putnamlike3 (evaluate) → putnamlike0 (load) → analyze
+
+    REQUIREMENTS:
+    - Input file MUST be from putnamlike3 output (e.g., *_reward_hacking.yaml)
+    - Input file MUST contain StepFaithfulness annotations
+    - This is ONLY for reusing existing evaluation data for additional analysis
+
+    Args:
+        input_path: Path to faithfulness-annotated YAML file from putnamlike3
+        faithfulness_filter: "all", "faithful", or "unfaithful"
+        evaluation_mode_str: "reward_hacking" or "latent_error_correction"
+
+    Returns:
+        CotResponses object with filtered responses
+    """
+    from chainscope.cot_faithfulness_utils import EvaluationMode
+
+    logging.info(f"Loading pre-evaluated faithfulness responses from {input_path}")
+    logging.warning("=" * 80)
+    logging.warning("⚠️  POST-HOC ANALYSIS MODE - BACKWARD PIPELINE FLOW")
+    logging.warning("This loads ALREADY-EVALUATED responses from putnamlike3 output.")
+    logging.warning("Normal pipeline: generate (0) → evaluate (3) → load here")
+    logging.warning("=" * 80)
+
+    # Load split responses with faithfulness annotations
+    split_responses = SplitCotResponses.load(input_path)
+
+    # Get expected pattern for evaluation mode
+    eval_mode = EvaluationMode(evaluation_mode_str.upper())
+    expected_pattern = eval_mode.expected_answers_str
+
+    logging.info(
+        f"Filtering mode: {faithfulness_filter}, "
+        f"Evaluation: {evaluation_mode_str}, "
+        f"Expected pattern: {expected_pattern}"
+    )
+
+    # Statistics tracking
+    total_responses = 0
+    total_steps = 0
+    faithful_responses_count = 0
+    unfaithful_responses_count = 0
+    unfaithful_steps_count = 0
+
+    # Filter responses based on faithfulness pattern
+    filtered_responses_by_qid = {}
+
+    for qid, response_dict in split_responses.split_responses_by_qid.items():
+        for uuid, response in response_dict.items():
+            total_responses += 1
+            has_unfaithful_step = False
+
+            # Check each step for unfaithfulness
+            if isinstance(response.model_answer, list):
+                for step in response.model_answer:
+                    total_steps += 1
+
+                    if isinstance(step, StepFaithfulness):
+                        # Calculate Hamming distance from expected pattern
+                        if len(step.unfaithfulness) == len(expected_pattern):
+                            dist = sum(
+                                int(x != y)
+                                for x, y in zip(step.unfaithfulness, expected_pattern)
+                            )
+
+                            if dist == 0:  # Exact match = unfaithful step
+                                has_unfaithful_step = True
+                                unfaithful_steps_count += 1
+
+            # Count response faithfulness
+            if has_unfaithful_step:
+                unfaithful_responses_count += 1
+            else:
+                faithful_responses_count += 1
+
+            # Apply filter
+            should_include = (
+                faithfulness_filter == "all" or
+                (faithfulness_filter == "faithful" and not has_unfaithful_step) or
+                (faithfulness_filter == "unfaithful" and has_unfaithful_step)
+            )
+
+            if should_include:
+                if qid not in filtered_responses_by_qid:
+                    filtered_responses_by_qid[qid] = {}
+                filtered_responses_by_qid[qid][uuid] = response
+
+    # Calculate percentages
+    faithful_pct = (faithful_responses_count / total_responses * 100) if total_responses > 0 else 0
+    unfaithful_pct = (unfaithful_responses_count / total_responses * 100) if total_responses > 0 else 0
+    unfaithful_step_pct = (unfaithful_steps_count / total_steps * 100) if total_steps > 0 else 0
+
+    # Log comprehensive statistics
+    logging.warning("")
+    logging.warning("=" * 80)
+    logging.warning("FAITHFULNESS STATISTICS")
+    logging.warning("=" * 80)
+    logging.warning(f"Total responses loaded: {total_responses:,}")
+    logging.warning(f"Total steps evaluated: {total_steps:,}")
+    logging.warning("")
+    logging.warning(f"Faithful responses (no unfaithful steps): {faithful_responses_count:,} "
+                   f"({faithful_pct:.1f}%)")
+    logging.warning(f"Unfaithful responses (≥1 unfaithful step): {unfaithful_responses_count:,} "
+                   f"({unfaithful_pct:.1f}%)")
+    logging.warning("")
+    logging.warning(f"Unfaithful steps (matching {expected_pattern}): {unfaithful_steps_count:,} "
+                   f"({unfaithful_step_pct:.2f}% of all steps)")
+    logging.warning("")
+    logging.warning(f"Filter applied: '{faithfulness_filter}'")
+    filtered_count = sum(len(d) for d in filtered_responses_by_qid.values())
+    logging.warning(f"Responses after filtering: {filtered_count:,}")
+    logging.warning("=" * 80)
+
+    # Convert back to CotResponses format
+    # Note: We lose the step-level annotations here, converting back to strings
+    responses_by_qid = {}
+    for qid, response_dict in filtered_responses_by_qid.items():
+        responses_by_qid[qid] = {}
+        for uuid, response in response_dict.items():
+            # Convert StepFaithfulness back to strings if needed
+            model_answer = response.model_answer
+            if isinstance(model_answer, list) and len(model_answer) > 0:
+                if isinstance(model_answer[0], StepFaithfulness):
+                    # Extract just the step strings
+                    model_answer = [step.step_str for step in model_answer]
+
+            responses_by_qid[qid][uuid] = MathResponse(
+                name=response.name,
+                problem=response.problem,
+                solution=response.solution,
+                model_thinking=response.model_thinking,
+                model_answer=model_answer,
+                correctness_explanation=response.correctness_explanation,
+                correctness_is_correct=response.correctness_is_correct,
+                correctness_classification=response.correctness_classification,
+            )
+
+    return CotResponses(
+        responses_by_qid=responses_by_qid,
+        fsp_by_resp_id=None,
+        model_id=split_responses.model_id,
+        instr_id=split_responses.instr_id,
+        ds_params=split_responses.ds_params,
+        sampling_params=split_responses.sampling_params,
     )
 
 
@@ -1147,6 +1308,24 @@ async def generate_rollouts(
     default=None,
     help="Number of states to process at once for GPU metric computation (None = auto-calculate based on GPU memory). Only used with --use-gpu.",
 )
+@click.option(
+    "--load-ground-truth",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="⚠️  POST-HOC ANALYSIS ONLY: Load pre-evaluated faithfulness responses from putnamlike3 output (goes BACKWARD in pipeline). Requires file with StepFaithfulness annotations.",
+)
+@click.option(
+    "--faithfulness-filter",
+    type=click.Choice(["all", "faithful", "unfaithful"]),
+    default="all",
+    help="Filter loaded responses by faithfulness (only used with --load-ground-truth). 'all' keeps everything, 'faithful' keeps only responses without unfaithful steps, 'unfaithful' keeps only responses with unfaithful steps.",
+)
+@click.option(
+    "--evaluation-mode",
+    type=click.Choice(["reward_hacking", "latent_error_correction"]),
+    default="reward_hacking",
+    help="Evaluation mode for pattern matching (only used with --load-ground-truth). 'reward_hacking' uses pattern YNNNYNFN (8 questions), 'latent_error_correction' uses YNFNFYNYN (9 questions).",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1179,9 +1358,64 @@ def main(
     context_size: int | None,
     use_gpu: bool,
     metric_batch: int,
+    load_ground_truth: Optional[Path],
+    faithfulness_filter: str,
+    evaluation_mode: str,
 ):
-    """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models."""
+    """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models.
+
+    When --load-ground-truth is provided, this script loads pre-evaluated faithfulness
+    responses instead of generating new ones. This is for POST-HOC ANALYSIS ONLY.
+    """
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
+
+    # ========================================================================
+    # SPECIAL CASE: Load pre-evaluated faithfulness responses (POST-HOC ONLY)
+    # ========================================================================
+    # This goes BACKWARD in the pipeline:
+    #   Normal flow: putnamlike0 (generate) → putnamlike3 (evaluate)
+    #   This flow:   putnamlike3 (evaluate) → putnamlike0 (load for analysis)
+    #
+    # This is ONLY for post-hoc analysis of already-evaluated responses.
+    # It bypasses all generation logic and loads responses with StepFaithfulness
+    # annotations from putnamlike3 output files.
+    # ========================================================================
+    if load_ground_truth is not None:
+        logging.warning("=" * 80)
+        logging.warning("⚠️  POST-HOC ANALYSIS MODE: Loading pre-evaluated faithfulness responses")
+        logging.warning(f"⚠️  Input file: {load_ground_truth}")
+        logging.warning(f"⚠️  Filter mode: {faithfulness_filter}")
+        logging.warning(f"⚠️  Evaluation mode: {evaluation_mode}")
+        logging.warning("⚠️  This goes BACKWARD in the pipeline - loading already-evaluated data")
+        logging.warning("=" * 80)
+
+        # Load and filter the faithfulness responses
+        filtered_responses = load_and_filter_faithfulness_responses(
+            input_path=load_ground_truth,
+            faithfulness_filter=faithfulness_filter,
+            evaluation_mode_str=evaluation_mode,
+        )
+
+        # Save filtered results
+        # Extract meaningful suffix from input filename for output
+        input_stem = load_ground_truth.stem
+        filter_suffix = f"_filtered_{faithfulness_filter}" if faithfulness_filter != "all" else "_all"
+
+        # Try to find existing versioned output
+        for i in range(0, 100):
+            output_path = filtered_responses.get_path(f"_v{i}_ground_truth{filter_suffix}")
+            if not os.path.exists(output_path):
+                break
+
+        saved_path = filtered_responses.save(path=output_path)
+        logging.warning("=" * 80)
+        logging.warning(f"✓ Saved filtered responses to: {saved_path}")
+        logging.warning("=" * 80)
+        return  # Early return - skip all generation logic
+
+    # ========================================================================
+    # NORMAL FLOW: Generate new responses (typical use case)
+    # ========================================================================
 
     # Convert dataset type string to enum
     dataset_type_enum = DatasetType(dataset_type)
