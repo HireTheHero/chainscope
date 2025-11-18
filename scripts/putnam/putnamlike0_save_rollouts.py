@@ -217,6 +217,12 @@ def get_putnam_responses_hf(
     reduce_per_step: bool = False,
     select_tokens: bool = False,
     token_index_list: list[int] | None = None,
+    n_jobs: int = -1,
+    context_size: int | None = None,
+    use_gpu: bool = False,
+    metric_batch: int | None = None,
+    faithfulness_labels_for_metrics: dict[tuple[str, str], str] | None = None,
+    metric_faithfulness_filter: str = "all",
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation for Putnam problems.
 
@@ -323,20 +329,53 @@ def get_putnam_responses_hf(
 
         # Compute and export metrics immediately after generation
         if compute_metric and hasattr(outputs, 'hidden_states') and metric_path:
-            _compute_and_export_metrics(
-                hidden_states=outputs.hidden_states,
-                response_idx=idx,
-                metric_type=metric_type,
-                metric_path=metric_path,
-                model_id=model_id,
-                debug=debug,
-                reduce_dim=reduce_dim,
-                num_dim=num_dim,
-                reduce_method=reduce_method,
-                reduce_per_step=reduce_per_step,
-                select_tokens=select_tokens,
-                token_index_list=token_index_list,
-            )
+            # Check if we should compute metrics for this response based on faithfulness
+            should_compute_metric = True
+            response_metric_path = metric_path
+
+            if faithfulness_labels_for_metrics is not None:
+                # Get the label for this response
+                qid = q_resp_id.qid
+                uuid = q_resp_id.response_uuid
+                response_label = faithfulness_labels_for_metrics.get((qid, uuid))
+
+                # Apply filter
+                if response_label is not None:
+                    if metric_faithfulness_filter == "faithful" and response_label != "faithful":
+                        should_compute_metric = False
+                    elif metric_faithfulness_filter == "unfaithful" and response_label != "unfaithful":
+                        should_compute_metric = False
+
+                    # Modify output path to separate by label
+                    if should_compute_metric:
+                        import os
+                        response_metric_path = os.path.join(metric_path, response_label)
+                        logging.info(f"Computing metrics for {response_label} response: {qid}/{uuid}")
+                else:
+                    # No label found for this response - skip if filtering is active
+                    if metric_faithfulness_filter != "all":
+                        logging.warning(f"No faithfulness label found for {qid}/{uuid}, skipping metric computation")
+                        should_compute_metric = False
+
+            if should_compute_metric:
+                _compute_and_export_metrics(
+                    hidden_states=outputs.hidden_states,
+                    response_idx=idx,
+                    metric_type=metric_type,
+                    metric_path=response_metric_path,
+                    model_id=model_id,
+                    debug=debug,
+                    reduce_dim=reduce_dim,
+                    num_dim=num_dim,
+                    reduce_method=reduce_method,
+                    reduce_per_step=reduce_per_step,
+                    select_tokens=select_tokens,
+                    token_index_list=token_index_list,
+                    n_jobs=n_jobs,
+                    context_size=context_size,
+                    use_gpu=use_gpu,
+                    metric_batch=metric_batch,
+                )
             # Free memory immediately to prevent OOM
             del outputs
             torch.cuda.empty_cache()
@@ -907,6 +946,7 @@ async def generate_rollouts_local(
     compute_metric: bool = False,
     metric_type: str = "mi",
     metric_path: Optional[str] = None,
+    debug: bool = False,
     reduce_dim: bool = False,
     num_dim: int = 100,
     reduce_method: str = "pca",
@@ -917,6 +957,8 @@ async def generate_rollouts_local(
     context_size: int | None = None,
     use_gpu: bool = False,
     metric_batch: int = None,
+    faithfulness_labels_for_metrics: dict[tuple[str, str], str] | None = None,
+    metric_faithfulness_filter: str = "all",
 ) -> CotResponses:
     """Generate rollouts using local models (VLLM or TTL).
     
@@ -995,6 +1037,12 @@ async def generate_rollouts_local(
             reduce_per_step=reduce_per_step,
             select_tokens=select_tokens,
             token_index_list=token_index_list,
+            n_jobs=n_jobs,
+            context_size=context_size,
+            use_gpu=use_gpu,
+            metric_batch=metric_batch,
+            faithfulness_labels_for_metrics=faithfulness_labels_for_metrics,
+            metric_faithfulness_filter=metric_faithfulness_filter,
         )
     else:  # ttl
         results = get_putnam_responses_tl(
@@ -1326,6 +1374,18 @@ async def generate_rollouts(
     default="reward_hacking",
     help="Evaluation mode for pattern matching (only used with --load-ground-truth). 'reward_hacking' uses pattern YNNNYNFN (8 questions), 'latent_error_correction' uses YNFNFYNYN (9 questions).",
 )
+@click.option(
+    "--metric-faithfulness-labels",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to faithfulness evaluation labels from putnamlike3 for metric computation. If not provided but --load-ground-truth is set, will use that path. Typically: data/cot_responses/instr-v0/default_sampling_params/{dataset_id}/{base_filename}_{eval_model}_{eval_mode}.yaml",
+)
+@click.option(
+    "--metric-faithfulness-filter",
+    type=click.Choice(["all", "faithful", "unfaithful"]),
+    default="all",
+    help="Filter which responses to compute metrics for based on faithfulness labels (only used with --metric-faithfulness-labels). 'all' computes for all responses, 'faithful' only for faithful responses, 'unfaithful' only for unfaithful responses.",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1361,6 +1421,8 @@ def main(
     load_ground_truth: Optional[Path],
     faithfulness_filter: str,
     evaluation_mode: str,
+    metric_faithfulness_labels: Optional[Path],
+    metric_faithfulness_filter: str,
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models.
 
@@ -1442,6 +1504,55 @@ def main(
             logging.error(f"Invalid token index list format: {e}")
             return
 
+    # Load faithfulness labels for metric computation if requested
+    faithfulness_labels_for_metrics = None
+    if compute_metric and (metric_faithfulness_labels is not None or load_ground_truth is not None):
+        # Use metric_faithfulness_labels if provided, otherwise fall back to load_ground_truth
+        labels_path = metric_faithfulness_labels if metric_faithfulness_labels is not None else load_ground_truth
+
+        logging.info(f"Loading faithfulness labels from: {labels_path}")
+        logging.info(f"Metric faithfulness filter: {metric_faithfulness_filter}")
+
+        # Load faithfulness responses (don't filter yet, just load all)
+        faithfulness_responses = load_and_filter_faithfulness_responses(
+            input_path=labels_path,
+            faithfulness_filter="all",  # Load all, we'll filter per-response
+            evaluation_mode_str=evaluation_mode,
+        )
+
+        # Build a mapping from (qid, response_uuid) to "faithful" or "unfaithful"
+        # This will be used during metric computation to filter/separate outputs
+        from chainscope.typing import StepFaithfulness
+        from chainscope.cot_faithfulness_utils import EvaluationMode
+
+        faithfulness_labels_for_metrics = {}
+        eval_mode = EvaluationMode(evaluation_mode.upper())
+        expected_pattern = eval_mode.expected_answers_str
+
+        for qid, response_dict in faithfulness_responses.split_responses_by_qid.items():
+            for uuid, response in response_dict.items():
+                # Determine if this response is faithful or unfaithful
+                has_unfaithful_step = False
+
+                if isinstance(response.model_answer, list):
+                    for step in response.model_answer:
+                        if isinstance(step, StepFaithfulness):
+                            # Check if this step matches the expected unfaithfulness pattern
+                            if len(step.unfaithfulness) == len(expected_pattern):
+                                dist = sum(int(x != y) for x, y in zip(step.unfaithfulness, expected_pattern))
+                                if dist == 0:  # Exact match = unfaithful step
+                                    has_unfaithful_step = True
+                                    break
+
+                # Store label
+                label = "unfaithful" if has_unfaithful_step else "faithful"
+                faithfulness_labels_for_metrics[(qid, uuid)] = label
+
+        logging.info(f"Loaded {len(faithfulness_labels_for_metrics)} faithfulness labels")
+        faithful_count = sum(1 for label in faithfulness_labels_for_metrics.values() if label == "faithful")
+        unfaithful_count = len(faithfulness_labels_for_metrics) - faithful_count
+        logging.info(f"  Faithful: {faithful_count}, Unfaithful: {unfaithful_count}")
+
     # Generate rollouts
     if api is not None:
         # Use local generation
@@ -1463,6 +1574,7 @@ def main(
                 compute_metric=compute_metric,
                 metric_type=metric,
                 metric_path=metric_path,
+                debug=debug,
                 reduce_dim=reduce_dim,
                 num_dim=num_dim,
                 reduce_method=reduce_method,
@@ -1473,6 +1585,8 @@ def main(
                 context_size=context_size,
                 use_gpu=use_gpu,
                 metric_batch=metric_batch,
+                faithfulness_labels_for_metrics=faithfulness_labels_for_metrics,
+                metric_faithfulness_filter=metric_faithfulness_filter,
             )
         )
     else:

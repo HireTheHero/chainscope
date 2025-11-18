@@ -404,6 +404,8 @@ def get_local_responses_hf(
     context_size: int | None = None,
     use_gpu: bool = False,
     metric_batch: int = None,
+    faithfulness_labels_for_metrics: dict[tuple[str, str], str] | None = None,
+    metric_faithfulness_filter: str = "all",
 ) -> list[tuple[QuestionResponseId, str, str | None]]:
     """Generate responses using HuggingFace native generation.
 
@@ -561,24 +563,55 @@ def get_local_responses_hf(
 
         # Compute and export metrics immediately after generation
         if compute_metric and hasattr(outputs, 'hidden_states') and metric_path:
-            _compute_and_export_metrics(
-                hidden_states=outputs.hidden_states,
-                response_idx=idx,
-                metric_type=metric_type,
-                metric_path=metric_path,
-                model_id=model_id,
-                debug=debug,
-                reduce_dim=reduce_dim,
-                num_dim=num_dim,
-                reduce_method=reduce_method,
-                reduce_per_step=reduce_per_step,
-                select_tokens=select_tokens,
-                token_index_list=token_index_list,
-                n_jobs=n_jobs,
-                context_size=context_size,
-                use_gpu=use_gpu,
-                metric_batch=metric_batch,
-            )
+            # Check if we should compute metrics for this response based on faithfulness
+            should_compute_metric = True
+            response_metric_path = metric_path
+
+            if faithfulness_labels_for_metrics is not None:
+                # Get the label for this response
+                qid = q_resp_id.qid
+                uuid = q_resp_id.uuid
+                response_label = faithfulness_labels_for_metrics.get((qid, uuid))
+
+                # Apply filter
+                if response_label is not None:
+                    if metric_faithfulness_filter == "faithful" and response_label != "faithful":
+                        should_compute_metric = False
+                    elif metric_faithfulness_filter == "unfaithful" and response_label != "unfaithful":
+                        should_compute_metric = False
+                    elif metric_faithfulness_filter == "unknown" and response_label != "unknown":
+                        should_compute_metric = False
+
+                    # Modify output path to separate by label
+                    if should_compute_metric:
+                        import os
+                        response_metric_path = os.path.join(metric_path, response_label)
+                        logging.info(f"Computing metrics for {response_label} response: {qid}/{uuid}")
+                else:
+                    # No label found for this response - skip if filtering is active
+                    if metric_faithfulness_filter != "all":
+                        logging.warning(f"No faithfulness label found for {qid}/{uuid}, skipping metric computation")
+                        should_compute_metric = False
+
+            if should_compute_metric:
+                _compute_and_export_metrics(
+                    hidden_states=outputs.hidden_states,
+                    response_idx=idx,
+                    metric_type=metric_type,
+                    metric_path=response_metric_path,
+                    model_id=model_id,
+                    debug=debug,
+                    reduce_dim=reduce_dim,
+                    num_dim=num_dim,
+                    reduce_method=reduce_method,
+                    reduce_per_step=reduce_per_step,
+                    select_tokens=select_tokens,
+                    token_index_list=token_index_list,
+                    n_jobs=n_jobs,
+                    context_size=context_size,
+                    use_gpu=use_gpu,
+                    metric_batch=metric_batch,
+                )
             # Free memory immediately to prevent OOM
             del outputs
             t.cuda.empty_cache()

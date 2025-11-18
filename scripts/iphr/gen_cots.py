@@ -371,6 +371,17 @@ def submit(
     default=None,
     help="Number of states to process at once for GPU metric computation (None = auto-calculate based on GPU memory). Only used with --use-gpu.",
 )
+@click.option(
+    "--metric-faithfulness-labels",
+    is_flag=True,
+    help="Use faithfulness labels from --unfaithful-only data for metric computation. Requires --compute-metric and loaded faithfulness data.",
+)
+@click.option(
+    "--metric-faithfulness-filter",
+    type=click.Choice(["all", "faithful", "unfaithful", "unknown"]),
+    default="all",
+    help="Filter which responses to compute metrics for based on faithfulness labels (only used with --metric-faithfulness-labels). 'all' computes for all responses, 'faithful' only for faithful, 'unfaithful' only for unfaithful, 'unknown' only for unknown.",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -401,6 +412,8 @@ def local(
     context_size: int | None,
     use_gpu: bool,
     metric_batch: int,
+    metric_faithfulness_labels: bool,
+    metric_faithfulness_filter: str,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -535,6 +548,34 @@ def local(
             logging.error(f"Invalid token index list format: {e}")
             return
 
+    # Build faithfulness labels mapping for metric computation if requested
+    faithfulness_labels_for_metrics = None
+    if compute_metric and metric_faithfulness_labels:
+        if not faithfulness_data_by_dataset:
+            logging.error("--metric-faithfulness-labels requires faithfulness data. Use --unfaithful-only to load it, or remove --metric-faithfulness-labels.")
+            return
+
+        logging.info("Building faithfulness labels mapping for metric computation...")
+        faithfulness_labels_for_metrics = {}
+
+        for dataset_id, data in faithfulness_data_by_dataset.items():
+            for qid, question in data.questions_by_qid.items():
+                # Faithful responses
+                for uuid in question.faithful_responses.keys():
+                    faithfulness_labels_for_metrics[(qid, uuid)] = "faithful"
+                # Unfaithful responses
+                for uuid in question.unfaithful_responses.keys():
+                    faithfulness_labels_for_metrics[(qid, uuid)] = "unfaithful"
+                # Unknown responses
+                for uuid in question.unknown_responses.keys():
+                    faithfulness_labels_for_metrics[(qid, uuid)] = "unknown"
+
+        logging.info(f"Loaded {len(faithfulness_labels_for_metrics)} faithfulness labels")
+        faithful_count = sum(1 for label in faithfulness_labels_for_metrics.values() if label == "faithful")
+        unfaithful_count = sum(1 for label in faithfulness_labels_for_metrics.values() if label == "unfaithful")
+        unknown_count = sum(1 for label in faithfulness_labels_for_metrics.values() if label == "unknown")
+        logging.info(f"  Faithful: {faithful_count}, Unfaithful: {unfaithful_count}, Unknown: {unknown_count}")
+
     # Process using local model
     if api == "vllm":
         results = get_local_responses_vllm(
@@ -574,6 +615,8 @@ def local(
             context_size=context_size,
             use_gpu=use_gpu,
             metric_batch=metric_batch,
+            faithfulness_labels_for_metrics=faithfulness_labels_for_metrics,
+            metric_faithfulness_filter=metric_faithfulness_filter,
         )
     else:  # ttl
         results = get_local_responses_tl(
