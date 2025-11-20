@@ -153,7 +153,7 @@ def submit(
         existing_responses = None
         response_path = ds_params.cot_responses_path(
             instr_id,
-            model_id,
+            model_name_for_files,
             sampling_params,
         )
         if response_path.exists():
@@ -471,6 +471,26 @@ def local(
 
     model_id = MODELS_MAP.get(model_id, model_id)
 
+    # Normalize model name for file paths and faithfulness lookup
+    # Extract just the model name from paths like ~/model/huggingface/qwen/qwq-32B
+    # Convert to a standard format: vendor/model-name (e.g., qwen/qwq-32b)
+    model_name_for_files = model_id.split("/")[-1].lower()
+
+    # Check if this looks like a local path (starts with ~, /, or .)
+    is_local_path = model_id.startswith(("~", "/", "."))
+
+    # For file naming, use normalized name instead of full path
+    # This keeps file names consistent regardless of where model is stored
+    if is_local_path:
+        # Extract vendor from path if possible (e.g., qwen from .../qwen/qwq-32B)
+        path_parts = model_id.split("/")
+        if len(path_parts) >= 2:
+            vendor = path_parts[-2].lower()
+            model_name_for_files = f"{vendor}/{model_name_for_files}"
+        logging.info(f"Using local model at {model_id}, normalized name: {model_name_for_files}")
+    else:
+        model_name_for_files = model_id
+
     sampling_params = SamplingParams(
         temperature=temperature,
         top_p=top_p,
@@ -487,10 +507,21 @@ def local(
     # Check faithfulness data if requested
     faithfulness_data_by_dataset: dict[str, UnfaithfulnessPairsDataset] = {}
     if unfaithful_only or load_faithfulness_data:
-        model_file_name = model_id.split("/")[-1]
-        faithfulness_dir = DATA_DIR / "faithfulness" / model_file_name
-        if not faithfulness_dir.exists():
-            logging.warning(f"No faithfulness data found for model {model_id}")
+        # Use normalized model name for faithfulness data lookup
+        model_file_name = model_name_for_files.split("/")[-1]
+
+        # Try to find matching faithfulness directory (case-insensitive)
+        faithfulness_base = DATA_DIR / "faithfulness"
+        faithfulness_dir = None
+        if faithfulness_base.exists():
+            for dir_path in faithfulness_base.iterdir():
+                if dir_path.is_dir() and dir_path.name.lower() == model_file_name.lower():
+                    faithfulness_dir = dir_path
+                    logging.info(f"Found faithfulness data directory: {faithfulness_dir}")
+                    break
+
+        if faithfulness_dir is None or not faithfulness_dir.exists():
+            logging.warning(f"No faithfulness data found for model {model_name_for_files} (looking for '{model_file_name}')")
             if unfaithful_only:
                 # --unfaithful-only requires faithfulness data
                 return
@@ -540,7 +571,7 @@ def local(
         existing_responses = None
         response_path = ds_params.cot_responses_path(
             instr_id,
-            model_id,
+            model_name_for_files,
             sampling_params,
         )
         if response_path.exists():
@@ -720,7 +751,7 @@ def local(
                     if existing_responses
                     else None,
                     new_responses=dataset_results,
-                    model_id=model_id,
+                    model_id=model_name_for_files,
                     instr_id=instr_id,
                     ds_params=ds_params,
                     sampling_params=sampling_params,
