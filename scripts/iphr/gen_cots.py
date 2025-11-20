@@ -294,6 +294,11 @@ def submit(
     help="Only generate CoTs for unfaithful pairs identified in faithfulness YAMLs",
 )
 @click.option(
+    "--load-faithfulness-data",
+    is_flag=True,
+    help="Load faithfulness data without filtering prompts (for metric separation on all responses). Loads data but generates for all questions, not just unfaithful pairs.",
+)
+@click.option(
     "--compute-metric",
     is_flag=True,
     help="Compute and export metrics (only works with --api hf)",
@@ -398,6 +403,7 @@ def local(
     test: bool,
     verbose: bool,
     unfaithful_only: bool,
+    load_faithfulness_data: bool,
     compute_metric: bool,
     metric: str,
     metric_path: str | None,
@@ -418,6 +424,10 @@ def local(
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
 
+    # Validate flag usage
+    if unfaithful_only and load_faithfulness_data:
+        logging.warning("Both --unfaithful-only and --load-faithfulness-data specified. Using --unfaithful-only (filters prompts).")
+
     model_id = MODELS_MAP.get(model_id, model_id)
 
     sampling_params = SamplingParams(
@@ -435,12 +445,15 @@ def local(
 
     # Check faithfulness data if requested
     faithfulness_data_by_dataset: dict[str, UnfaithfulnessPairsDataset] = {}
-    if unfaithful_only:
+    if unfaithful_only or load_faithfulness_data:
         model_file_name = model_id.split("/")[-1]
         faithfulness_dir = DATA_DIR / "faithfulness" / model_file_name
         if not faithfulness_dir.exists():
             logging.warning(f"No faithfulness data found for model {model_id}")
-            return
+            if unfaithful_only:
+                # --unfaithful-only requires faithfulness data
+                return
+            # --load-faithfulness-data is optional, can continue without it
 
         for dataset_id in dataset_id_list:
             ds_params = DatasetParams.from_id(dataset_id)
@@ -451,13 +464,19 @@ def local(
                     dataset_suffix=ds_params.suffix,
                 )
                 faithfulness_data_by_dataset[dataset_id] = faithfulness_data
+                logging.info(f"Loaded faithfulness data for dataset {dataset_id}")
             except Exception as e:
                 logging.warning(f"No faithfulness data found for model {model_id} on dataset {dataset_id}: {e}")
                 continue
 
         if not faithfulness_data_by_dataset:
-            logging.error("No faithfulness data found for any dataset")
-            return
+            if unfaithful_only:
+                # --unfaithful-only requires faithfulness data
+                logging.error("No faithfulness data found for any dataset")
+                return
+            else:
+                # --load-faithfulness-data is optional
+                logging.warning("No faithfulness data found, continuing without label separation")
 
     for dataset_id in dataset_id_list:
         if dataset_id.startswith("wm-"):
@@ -552,7 +571,7 @@ def local(
     faithfulness_labels_for_metrics = None
     if compute_metric and metric_faithfulness_labels:
         if not faithfulness_data_by_dataset:
-            logging.error("--metric-faithfulness-labels requires faithfulness data. Use --unfaithful-only to load it, or remove --metric-faithfulness-labels.")
+            logging.error("--metric-faithfulness-labels requires faithfulness data. Use --unfaithful-only or --load-faithfulness-data to load it, or remove --metric-faithfulness-labels.")
             return
 
         logging.info("Building faithfulness labels mapping for metric computation...")
