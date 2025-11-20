@@ -531,14 +531,14 @@ def local(
             ds_params = DatasetParams.from_id(dataset_id)
             try:
                 faithfulness_data = UnfaithfulnessPairsDataset.load(
-                    model_id=model_id,
+                    model_id=model_name_for_files,
                     prop_id=ds_params.prop_id,
                     dataset_suffix=ds_params.suffix,
                 )
                 faithfulness_data_by_dataset[dataset_id] = faithfulness_data
                 logging.info(f"Loaded faithfulness data for dataset {dataset_id}")
             except Exception as e:
-                logging.warning(f"No faithfulness data found for model {model_id} on dataset {dataset_id}: {e}")
+                logging.warning(f"No faithfulness data found for model {model_name_for_files} on dataset {dataset_id}: {e}")
                 continue
 
         if not faithfulness_data_by_dataset:
