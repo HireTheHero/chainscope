@@ -836,11 +836,14 @@ def create_batch_of_cot_prompts(
             existing_q_responses = existing_responses.responses_by_qid[qid]
 
         # Calculate how many more responses we need
-        n_existing = len(existing_q_responses)
-        n_needed = max(0, n_responses - n_existing)
-
-        if n_needed == 0:
-            continue
+        # When reusing UUIDs, always generate (ignore existing responses)
+        if uuid_mapping is not None:
+            n_needed = n_responses
+        else:
+            n_existing = len(existing_q_responses)
+            n_needed = max(0, n_responses - n_existing)
+            if n_needed == 0:
+                continue
 
         if question_type == "yes-no":
             q_str = q.q_str

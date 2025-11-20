@@ -174,7 +174,7 @@ def submit(
             instructions=instructions,
             question_type="yes-no",
             n_responses=n_responses,
-            existing_responses=existing_responses,
+            existing_responses=None if uuid_mapping_for_generation else existing_responses,
             uuid_mapping=uuid_mapping_for_generation,
         )
         if test:
@@ -414,6 +414,11 @@ def submit(
     default=None,
     help="Path to existing responses file to reuse UUIDs from. This allows matching new responses to existing faithfulness labels by question ID. Format: path/to/qwen__qwq-32b.yaml",
 )
+@click.option(
+    "--skip-response-save",
+    is_flag=True,
+    help="Skip saving generated responses (only compute metrics). Use with --reuse-uuids-from to regenerate and compute metrics without overwriting original responses.",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -448,6 +453,7 @@ def local(
     metric_faithfulness_labels: bool,
     metric_faithfulness_filter: str,
     reuse_uuids_from: Path | None,
+    skip_response_save: bool,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -455,6 +461,13 @@ def local(
     # Validate flag usage
     if unfaithful_only and load_faithfulness_data:
         logging.warning("Both --unfaithful-only and --load-faithfulness-data specified. Using --unfaithful-only (filters prompts).")
+
+    if skip_response_save and not compute_metric:
+        logging.error("--skip-response-save requires --compute-metric (otherwise nothing is saved)")
+        return
+
+    if skip_response_save and reuse_uuids_from is None:
+        logging.warning("--skip-response-save without --reuse-uuids-from will generate random UUIDs that can't be matched to labels")
 
     model_id = MODELS_MAP.get(model_id, model_id)
 
@@ -549,7 +562,7 @@ def local(
             instructions=instructions,
             question_type="yes-no",
             n_responses=n_responses,
-            existing_responses=existing_responses,
+            existing_responses=None if uuid_mapping_for_generation else existing_responses,
             uuid_mapping=uuid_mapping_for_generation,
         )
         if test:
@@ -695,23 +708,27 @@ def local(
                 results_by_dataset[dataset_id] = []
             results_by_dataset[dataset_id].append((q_resp_id, response, fsp))
 
-        # Save responses for each dataset
-        for dataset_id, dataset_results in results_by_dataset.items():
-            ds_idx = dataset_id_list.index(dataset_id)
-            ds_params = dataset_params_list[ds_idx]
-            existing_responses = existing_responses_list[ds_idx]
+        # Save responses for each dataset (unless --skip-response-save)
+        if not skip_response_save:
+            for dataset_id, dataset_results in results_by_dataset.items():
+                ds_idx = dataset_id_list.index(dataset_id)
+                ds_params = dataset_params_list[ds_idx]
+                existing_responses = existing_responses_list[ds_idx]
 
-            cot_responses = create_cot_responses(
-                responses_by_qid=existing_responses.responses_by_qid
-                if existing_responses
-                else None,
-                new_responses=dataset_results,
-                model_id=model_id,
-                instr_id=instr_id,
-                ds_params=ds_params,
-                sampling_params=sampling_params,
-            )
-            cot_responses.save()
+                cot_responses = create_cot_responses(
+                    responses_by_qid=existing_responses.responses_by_qid
+                    if existing_responses
+                    else None,
+                    new_responses=dataset_results,
+                    model_id=model_id,
+                    instr_id=instr_id,
+                    ds_params=ds_params,
+                    sampling_params=sampling_params,
+                )
+                cot_responses.save()
+                logging.info(f"Saved responses to {cot_responses.path}")
+        else:
+            logging.info("Skipping response save (--skip-response-save enabled)")
 
 
 @cli.command()
