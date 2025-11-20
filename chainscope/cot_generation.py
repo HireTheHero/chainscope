@@ -808,6 +808,7 @@ def create_batch_of_cot_prompts(
     question_type: Literal["yes-no", "open-ended"],
     n_responses: int,
     existing_responses: CotResponses | None = None,
+    uuid_mapping: dict[str, list[str]] | None = None,
 ) -> list[tuple[QuestionResponseId, str]]:
     """Create a batch of CoT prompts for questions that need responses.
 
@@ -817,11 +818,14 @@ def create_batch_of_cot_prompts(
         question_type: Type of questions to generate responses for
         n_responses: Number of responses needed per question
         existing_responses: Existing responses to skip
+        uuid_mapping: Optional mapping from question ID to list of UUIDs to reuse
 
     Returns:
         List of tuples containing (question response ID, prompt)
     """
     batch_items: list[tuple[QuestionResponseId, str]] = []
+    uuid_counters: dict[str, int] = {}  # Track which UUID index to use for each question
+
     for qid, q in question_dataset.question_by_qid.items():
         # Get existing responses for this question
         existing_q_responses = {}
@@ -847,7 +851,22 @@ def create_batch_of_cot_prompts(
 
         # Create n_needed items for this question
         for _ in range(n_needed):
-            q_response_id = QuestionResponseId(qid=qid, uuid=str(uuid4()))
+            # Determine UUID: reuse from mapping if available, otherwise generate new
+            if uuid_mapping and qid in uuid_mapping:
+                if qid not in uuid_counters:
+                    uuid_counters[qid] = 0
+                idx = uuid_counters[qid]
+                if idx < len(uuid_mapping[qid]):
+                    response_uuid = uuid_mapping[qid][idx]
+                    uuid_counters[qid] += 1
+                else:
+                    # Ran out of old UUIDs, generate new one
+                    response_uuid = str(uuid4())
+                    logging.warning(f"Ran out of UUIDs for question {qid}, generating new UUID")
+            else:
+                response_uuid = str(uuid4())
+
+            q_response_id = QuestionResponseId(qid=qid, uuid=response_uuid)
             batch_items.append((q_response_id, prompt))
 
     return batch_items

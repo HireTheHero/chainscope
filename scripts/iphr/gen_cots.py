@@ -24,6 +24,26 @@ from chainscope.typing import *
 from chainscope.utils import MODELS_MAP
 
 
+def load_uuid_mapping_from_responses(input_path: Path) -> dict[str, list[str]]:
+    """Load UUID mapping from existing responses for reuse in new generation.
+
+    Args:
+        input_path: Path to existing CotResponses YAML file
+
+    Returns:
+        Dictionary mapping question ID to sorted list of UUIDs
+    """
+    cot_responses = CotResponses.load(input_path)
+    uuid_by_qid = {}
+
+    for qid, response_dict in cot_responses.responses_by_qid.items():
+        uuid_by_qid[qid] = sorted(response_dict.keys())
+        logging.info(f"Loaded {len(response_dict)} UUIDs for question {qid}")
+
+    logging.info(f"Total: loaded UUID mappings for {len(uuid_by_qid)} questions")
+    return uuid_by_qid
+
+
 @click.group()
 def cli():
     """Generate CoT responses using various APIs."""
@@ -155,6 +175,7 @@ def submit(
             question_type="yes-no",
             n_responses=n_responses,
             existing_responses=existing_responses,
+            uuid_mapping=uuid_mapping_for_generation,
         )
         if test:
             batch_of_cot_prompts = batch_of_cot_prompts[:10]
@@ -387,6 +408,12 @@ def submit(
     default="all",
     help="Filter which responses to compute metrics for based on faithfulness labels (only used with --metric-faithfulness-labels). 'all' computes for all responses, 'faithful' only for faithful, 'unfaithful' only for unfaithful, 'unknown' only for unknown.",
 )
+@click.option(
+    "--reuse-uuids-from",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to existing responses file to reuse UUIDs from. This allows matching new responses to existing faithfulness labels by question ID. Format: path/to/qwen__qwq-32b.yaml",
+)
 def local(
     n_responses: int,
     dataset_ids: str,
@@ -420,6 +447,7 @@ def local(
     metric_batch: int,
     metric_faithfulness_labels: bool,
     metric_faithfulness_filter: str,
+    reuse_uuids_from: Path | None,
 ):
     """Generate CoT responses using local models."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING)
@@ -478,6 +506,12 @@ def local(
                 # --load-faithfulness-data is optional
                 logging.warning("No faithfulness data found, continuing without label separation")
 
+    # Load UUID mapping for reuse if specified
+    uuid_mapping_for_generation = None
+    if reuse_uuids_from is not None:
+        logging.info(f"Loading UUID mapping from {reuse_uuids_from}")
+        uuid_mapping_for_generation = load_uuid_mapping_from_responses(reuse_uuids_from)
+
     for dataset_id in dataset_id_list:
         if dataset_id.startswith("wm-"):
             assert instr_id == "instr-wm"
@@ -516,6 +550,7 @@ def local(
             question_type="yes-no",
             n_responses=n_responses,
             existing_responses=existing_responses,
+            uuid_mapping=uuid_mapping_for_generation,
         )
         if test:
             batch_of_cot_prompts = batch_of_cot_prompts[:10]
