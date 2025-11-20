@@ -336,7 +336,7 @@ def get_putnam_responses_hf(
             if faithfulness_labels_for_metrics is not None:
                 # Get the label for this response
                 qid = q_resp_id.qid
-                uuid = q_resp_id.response_uuid
+                uuid = q_resp_id.uuid  # Fixed: was response_uuid, should be uuid
                 response_label = faithfulness_labels_for_metrics.get((qid, uuid))
 
                 # Apply filter
@@ -519,21 +519,28 @@ def convert_putnam_to_local_format(
     preamble: str = "",
     prefix: Optional[int] = None,
     epochs: int = 1,
+    uuid_mapping: Optional[dict[str, list[str]]] = None,
 ) -> list[tuple[QuestionResponseId, str]]:
     """Convert Putnam dataset to format expected by local generation functions.
-    
+
     Args:
         dataset: Putnam dataset
         preamble: Preamble text to add before each problem
         prefix: Only process first N problems if specified
         epochs: Number of epochs to generate
-        
+        uuid_mapping: Optional mapping of question IDs to lists of UUIDs to reuse.
+                     If provided, will use these UUIDs instead of generating new ones.
+                     This enables matching new responses to existing faithfulness labels.
+
     Returns:
         List of (QuestionResponseId, prompt) tuples
     """
     questions = dataset.questions[:prefix] if prefix else dataset.questions
     prompts = []
-    
+
+    # Track which UUID index to use for each question
+    uuid_counters: dict[str, int] = {}
+
     for epoch in range(epochs):
         for question in questions:
             # Create question name with epoch if > 1
@@ -541,16 +548,38 @@ def convert_putnam_to_local_format(
                 question_name = f"{question.name}_attempt_{epoch + 1}"
             else:
                 question_name = question.name
-            
+
+            # Determine UUID: reuse from mapping if available, otherwise generate new
+            if uuid_mapping and question_name in uuid_mapping:
+                # Initialize counter for this question if first time
+                if question_name not in uuid_counters:
+                    uuid_counters[question_name] = 0
+
+                # Get the next UUID from the mapping
+                idx = uuid_counters[question_name]
+                if idx < len(uuid_mapping[question_name]):
+                    response_uuid = uuid_mapping[question_name][idx]
+                    uuid_counters[question_name] += 1
+                    logging.debug(f"Reusing UUID {response_uuid} for {question_name} (index {idx})")
+                else:
+                    # Ran out of old UUIDs, generate a new one
+                    response_uuid = str(uuid.uuid4())
+                    logging.warning(f"No more old UUIDs for {question_name} (needed {idx + 1}, have {len(uuid_mapping[question_name])}). Generating new UUID.")
+            else:
+                # No mapping or question not in mapping - generate new UUID
+                response_uuid = str(uuid.uuid4())
+                if uuid_mapping:
+                    logging.debug(f"Question {question_name} not in UUID mapping, generating new UUID")
+
             # Create a QuestionResponseId for this question-response pair
             q_resp_id = QuestionResponseId(
                 qid=question_name,
-                uuid=str(uuid.uuid4())
+                uuid=response_uuid
             )
-            
+
             prompt = f"{preamble}{question.problem}"
             prompts.append((q_resp_id, prompt))
-    
+
     return prompts
 
 
@@ -799,6 +828,34 @@ def load_and_filter_faithfulness_responses(
     )
 
 
+def load_uuid_mapping_from_responses(input_path: Path) -> dict[str, list[str]]:
+    """Load UUID mapping from existing responses for reuse in new generation.
+
+    This extracts UUIDs from an existing SplitCotResponses file and organizes them
+    by question ID in a deterministic order. These UUIDs can then be reused when
+    generating new responses to maintain correspondence with faithfulness labels.
+
+    Args:
+        input_path: Path to SplitCotResponses YAML file with existing responses
+
+    Returns:
+        Dictionary mapping question IDs to lists of UUIDs in sorted order
+        Example: {"putnam_2024_a1": ["uuid1", "uuid2"], "putnam_2024_a2": ["uuid3"]}
+    """
+    from chainscope.typing import SplitCotResponses
+
+    split_responses = SplitCotResponses.load(input_path)
+    uuid_by_qid = {}
+
+    for qid, response_dict in split_responses.split_responses_by_qid.items():
+        # Sort UUIDs deterministically to ensure consistent ordering
+        uuid_by_qid[qid] = sorted(response_dict.keys())
+        logging.info(f"Loaded {len(response_dict)} UUIDs for question {qid}")
+
+    logging.info(f"Total: loaded UUID mappings for {len(uuid_by_qid)} questions")
+    return uuid_by_qid
+
+
 def create_putnam_dataset(dataset_type: DatasetType) -> MathQsDataset:
     """Create a MathQsDataset based on the dataset type.
     
@@ -959,6 +1016,7 @@ async def generate_rollouts_local(
     metric_batch: int = None,
     faithfulness_labels_for_metrics: dict[tuple[str, str], str] | None = None,
     metric_faithfulness_filter: str = "all",
+    uuid_mapping: dict[str, list[str]] | None = None,
 ) -> CotResponses:
     """Generate rollouts using local models (VLLM or TTL).
     
@@ -997,7 +1055,7 @@ async def generate_rollouts_local(
     )
     
     # Convert Putnam data to local format (already handles epochs)
-    all_prompts = convert_putnam_to_local_format(dataset, preamble, prefix, epochs)
+    all_prompts = convert_putnam_to_local_format(dataset, preamble, prefix, epochs, uuid_mapping)
     
     if not all_prompts:
         logging.info("No prompts to process")
@@ -1386,6 +1444,12 @@ async def generate_rollouts(
     default="all",
     help="Filter which responses to compute metrics for based on faithfulness labels (only used with --metric-faithfulness-labels). 'all' computes for all responses, 'faithful' only for faithful responses, 'unfaithful' only for unfaithful responses.",
 )
+@click.option(
+    "--reuse-uuids-from",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Reuse UUIDs from existing responses to maintain correspondence with faithfulness labels. Typically use the same file as --metric-faithfulness-labels. This ensures new responses can be matched to old labels by (qid, uuid) pairs.",
+)
 def main(
     dataset_type: str,
     model_id: str,
@@ -1423,6 +1487,7 @@ def main(
     evaluation_mode: str,
     metric_faithfulness_labels: Optional[Path],
     metric_faithfulness_filter: str,
+    reuse_uuids_from: Optional[Path],
 ):
     """Generate rollouts for Putnam problems using OpenRouter or DeepSeek models.
 
@@ -1553,6 +1618,22 @@ def main(
         unfaithful_count = len(faithfulness_labels_for_metrics) - faithful_count
         logging.info(f"  Faithful: {faithful_count}, Unfaithful: {unfaithful_count}")
 
+    # Load UUID mapping for reuse if requested
+    uuid_mapping_for_generation = None
+    if reuse_uuids_from is not None:
+        logging.info(f"Loading UUID mapping from: {reuse_uuids_from}")
+        uuid_mapping_for_generation = load_uuid_mapping_from_responses(reuse_uuids_from)
+        logging.info(f"Loaded UUID mappings for {len(uuid_mapping_for_generation)} questions")
+
+        # Validate that uuid_mapping and labels are from same file (if both provided)
+        if metric_faithfulness_labels is not None and reuse_uuids_from != metric_faithfulness_labels:
+            logging.warning("=" * 80)
+            logging.warning("⚠️  WARNING: --reuse-uuids-from and --metric-faithfulness-labels point to different files!")
+            logging.warning(f"⚠️  UUIDs from: {reuse_uuids_from}")
+            logging.warning(f"⚠️  Labels from: {metric_faithfulness_labels}")
+            logging.warning("⚠️  This may cause label mismatch. Consider using the same file for both.")
+            logging.warning("=" * 80)
+
     # Generate rollouts
     if api is not None:
         # Use local generation
@@ -1587,6 +1668,7 @@ def main(
                 metric_batch=metric_batch,
                 faithfulness_labels_for_metrics=faithfulness_labels_for_metrics,
                 metric_faithfulness_filter=metric_faithfulness_filter,
+                uuid_mapping=uuid_mapping_for_generation,
             )
         )
     else:
